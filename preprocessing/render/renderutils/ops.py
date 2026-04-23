@@ -88,12 +88,12 @@ def _get_plugin():
     # Compile and load.
     source_paths = [os.path.join(os.path.dirname(__file__), fn) for fn in source_files]
     try:
-        torch.utils.cpp_extension.load(name='renderutils_plugin', sources=source_paths, extra_cflags=opts,
-             extra_cuda_cflags=opts, extra_ldflags=ldflags, with_cuda=True, verbose=True)
+        # Build and import the extension; capture the returned module object
+        plugin_mod = torch.utils.cpp_extension.load(name='renderutils_plugin', sources=source_paths,
+             extra_cflags=opts, extra_cuda_cflags=opts, extra_ldflags=ldflags, with_cuda=True, verbose=True)
 
-        # Import, cache, and return the compiled module.
-        import renderutils_plugin
-        _cached_plugin = renderutils_plugin
+        # Cache and return the compiled module object returned by load().
+        _cached_plugin = plugin_mod
         return _cached_plugin
     except Exception as e:
         print(f"Warning: could not build/import renderutils_plugin: {e}\nFalling back to Python implementations (slower).")
