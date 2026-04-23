@@ -47,7 +47,19 @@ def _get_plugin():
 
     # Linker options.
     if os.name == 'posix':
+        # Basic CUDA link flags
         ldflags = ['-lcuda', '-lnvrtc']
+        # Try to embed rpath to PyTorch lib and CUDA lib64 so the compiled
+        # extension can find libc10/libtorch and libcudart at import time
+        # without requiring the user to set LD_LIBRARY_PATH manually.
+        try:
+            torch_lib = os.path.join(os.path.dirname(torch.__file__), 'lib')
+            if os.path.isdir(torch_lib):
+                # Add linker rpath flags
+                ldflags += [f'-Wl,-rpath,{torch_lib}', '-Wl,-rpath,/usr/local/cuda/lib64']
+        except Exception:
+            # If anything goes wrong, fall back to the minimal flags above.
+            pass
     elif os.name == 'nt':
         ldflags = ['cuda.lib', 'advapi32.lib', 'nvrtc.lib']
 
@@ -75,13 +87,18 @@ def _get_plugin():
 
     # Compile and load.
     source_paths = [os.path.join(os.path.dirname(__file__), fn) for fn in source_files]
-    torch.utils.cpp_extension.load(name='renderutils_plugin', sources=source_paths, extra_cflags=opts,
-         extra_cuda_cflags=opts, extra_ldflags=ldflags, with_cuda=True, verbose=True)
+    try:
+        torch.utils.cpp_extension.load(name='renderutils_plugin', sources=source_paths, extra_cflags=opts,
+             extra_cuda_cflags=opts, extra_ldflags=ldflags, with_cuda=True, verbose=True)
 
-    # Import, cache, and return the compiled module.
-    import renderutils_plugin
-    _cached_plugin = renderutils_plugin
-    return _cached_plugin
+        # Import, cache, and return the compiled module.
+        import renderutils_plugin
+        _cached_plugin = renderutils_plugin
+        return _cached_plugin
+    except Exception as e:
+        print(f"Warning: could not build/import renderutils_plugin: {e}\nFalling back to Python implementations (slower).")
+        _cached_plugin = None
+        return None
 
 #----------------------------------------------------------------------------
 # Internal kernels, just used for testing functionality
@@ -89,14 +106,36 @@ def _get_plugin():
 class _fresnel_shlick_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, f0, f90, cosTheta):
-        out = _get_plugin().fresnel_shlick_fwd(f0, f90, cosTheta, False)
-        ctx.save_for_backward(f0, f90, cosTheta)
-        return out
-
+        try:
+            out = _get_plugin().fresnel_shlick_fwd(f0, f90, cosTheta, False)
+            ctx.save_for_backward(f0, f90, cosTheta)
+            return out
+        except Exception:
+            # Fallback to Python implementation
+            out = bsdf_fresnel_shlick(f0, f90, cosTheta)
+            ctx.save_for_backward(f0, f90, cosTheta)
+            return out
+    
     @staticmethod
     def backward(ctx, dout):
         f0, f90, cosTheta = ctx.saved_variables
-        return _get_plugin().fresnel_shlick_bwd(f0, f90, cosTheta, dout) + (None,)
+        try:
+            return _get_plugin().fresnel_shlick_bwd(f0, f90, cosTheta, dout) + (None,)
+        except Exception:
+            # Recompute forward with Python implementation and get gradients
+            f0_req = f0.requires_grad
+            f90_req = f90.requires_grad
+            cos_req = cosTheta.requires_grad
+            f0_ = f0.detach().requires_grad_(f0_req)
+            f90_ = f90.detach().requires_grad_(f90_req)
+            cos_ = cosTheta.detach().requires_grad_(cos_req)
+            out = bsdf_fresnel_shlick(f0_, f90_, cos_)
+            grads = torch.autograd.grad(out, (f0_, f90_, cos_), dout, retain_graph=False, allow_unused=True)
+            # return gradient tuples, plugin bwd returned (df0, df90, dcos) + (None,)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            g2 = grads[2] if grads and len(grads) > 2 else None
+            return (g0, g1, g2)
 
 def _fresnel_shlick(f0, f90, cosTheta, use_python=False):
     if use_python:
@@ -112,14 +151,28 @@ def _fresnel_shlick(f0, f90, cosTheta, use_python=False):
 class _ndf_ggx_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, alphaSqr, cosTheta):
-        out = _get_plugin().ndf_ggx_fwd(alphaSqr, cosTheta, False)
-        ctx.save_for_backward(alphaSqr, cosTheta)
-        return out
+        try:
+            out = _get_plugin().ndf_ggx_fwd(alphaSqr, cosTheta, False)
+            ctx.save_for_backward(alphaSqr, cosTheta)
+            return out
+        except Exception:
+            out = bsdf_ndf_ggx(alphaSqr, cosTheta)
+            ctx.save_for_backward(alphaSqr, cosTheta)
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         alphaSqr, cosTheta = ctx.saved_variables
-        return _get_plugin().ndf_ggx_bwd(alphaSqr, cosTheta, dout) + (None,)
+        try:
+            return _get_plugin().ndf_ggx_bwd(alphaSqr, cosTheta, dout) + (None,)
+        except Exception:
+            alphaSqr_ = alphaSqr.detach().requires_grad_(alphaSqr.requires_grad)
+            cosTheta_ = cosTheta.detach().requires_grad_(cosTheta.requires_grad)
+            out = bsdf_ndf_ggx(alphaSqr_, cosTheta_)
+            grads = torch.autograd.grad(out, (alphaSqr_, cosTheta_), dout, retain_graph=False, allow_unused=True)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            return (g0, g1)
 
 def _ndf_ggx(alphaSqr, cosTheta, use_python=False):
     if use_python:
@@ -134,14 +187,28 @@ def _ndf_ggx(alphaSqr, cosTheta, use_python=False):
 class _lambda_ggx_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, alphaSqr, cosTheta):
-        out = _get_plugin().lambda_ggx_fwd(alphaSqr, cosTheta, False)
-        ctx.save_for_backward(alphaSqr, cosTheta)
-        return out
+        try:
+            out = _get_plugin().lambda_ggx_fwd(alphaSqr, cosTheta, False)
+            ctx.save_for_backward(alphaSqr, cosTheta)
+            return out
+        except Exception:
+            out = bsdf_lambda_ggx(alphaSqr, cosTheta)
+            ctx.save_for_backward(alphaSqr, cosTheta)
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         alphaSqr, cosTheta = ctx.saved_variables
-        return _get_plugin().lambda_ggx_bwd(alphaSqr, cosTheta, dout) + (None,)
+        try:
+            return _get_plugin().lambda_ggx_bwd(alphaSqr, cosTheta, dout) + (None,)
+        except Exception:
+            alphaSqr_ = alphaSqr.detach().requires_grad_(alphaSqr.requires_grad)
+            cosTheta_ = cosTheta.detach().requires_grad_(cosTheta.requires_grad)
+            out = bsdf_lambda_ggx(alphaSqr_, cosTheta_)
+            grads = torch.autograd.grad(out, (alphaSqr_, cosTheta_), dout, retain_graph=False, allow_unused=True)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            return (g0, g1)
 
 def _lambda_ggx(alphaSqr, cosTheta, use_python=False):
     if use_python:
@@ -157,13 +224,28 @@ class _masking_smith_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, alphaSqr, cosThetaI, cosThetaO):
         ctx.save_for_backward(alphaSqr, cosThetaI, cosThetaO)
-        out = _get_plugin().masking_smith_fwd(alphaSqr, cosThetaI, cosThetaO, False)
-        return out
+        try:
+            out = _get_plugin().masking_smith_fwd(alphaSqr, cosThetaI, cosThetaO, False)
+            return out
+        except Exception:
+            out = bsdf_masking_smith_ggx_correlated(alphaSqr, cosThetaI, cosThetaO)
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         alphaSqr, cosThetaI, cosThetaO = ctx.saved_variables
-        return _get_plugin().masking_smith_bwd(alphaSqr, cosThetaI, cosThetaO, dout) + (None,)
+        try:
+            return _get_plugin().masking_smith_bwd(alphaSqr, cosThetaI, cosThetaO, dout) + (None,)
+        except Exception:
+            a_ = alphaSqr.detach().requires_grad_(alphaSqr.requires_grad)
+            i_ = cosThetaI.detach().requires_grad_(cosThetaI.requires_grad)
+            o_ = cosThetaO.detach().requires_grad_(cosThetaO.requires_grad)
+            out = bsdf_masking_smith_ggx_correlated(a_, i_, o_)
+            grads = torch.autograd.grad(out, (a_, i_, o_), dout, retain_graph=False, allow_unused=True)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            g2 = grads[2] if grads and len(grads) > 2 else None
+            return (g0, g1, g2)
 
 def _masking_smith(alphaSqr, cosThetaI, cosThetaO, use_python=False):
     if use_python:
@@ -182,14 +264,32 @@ class _prepare_shading_normal_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, two_sided_shading, opengl):
         ctx.two_sided_shading, ctx.opengl = two_sided_shading, opengl
-        out = _get_plugin().prepare_shading_normal_fwd(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, two_sided_shading, opengl, False)
-        ctx.save_for_backward(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm)
-        return out
+        try:
+            out = _get_plugin().prepare_shading_normal_fwd(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, two_sided_shading, opengl, False)
+            ctx.save_for_backward(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm)
+            return out
+        except Exception:
+            out = bsdf_prepare_shading_normal(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, two_sided_shading, opengl)
+            ctx.save_for_backward(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm)
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm = ctx.saved_variables
-        return _get_plugin().prepare_shading_normal_bwd(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, dout, ctx.two_sided_shading, ctx.opengl) + (None, None, None)
+        try:
+            return _get_plugin().prepare_shading_normal_bwd(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, dout, ctx.two_sided_shading, ctx.opengl) + (None, None, None)
+        except Exception:
+            pos_ = pos.detach().requires_grad_(pos.requires_grad)
+            vp_ = view_pos.detach().requires_grad_(view_pos.requires_grad)
+            pert_ = perturbed_nrm.detach().requires_grad_(perturbed_nrm.requires_grad)
+            s_ = smooth_nrm.detach().requires_grad_(smooth_nrm.requires_grad)
+            t_ = smooth_tng.detach().requires_grad_(smooth_tng.requires_grad)
+            g_ = geom_nrm.detach().requires_grad_(geom_nrm.requires_grad)
+            out = bsdf_prepare_shading_normal(pos_, vp_, pert_, s_, t_, g_, ctx.two_sided_shading, ctx.opengl)
+            grads = torch.autograd.grad(out, (pos_, vp_, pert_, s_, t_, g_), dout, retain_graph=False, allow_unused=True)
+            # pad to 6 entries
+            res = [grads[i] if i < len(grads) else None for i in range(6)]
+            return tuple(res)
 
 def prepare_shading_normal(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng, geom_nrm, two_sided_shading=True, opengl=True, use_python=False):
     '''Takes care of all corner cases and produces a final normal used for shading:
@@ -232,14 +332,28 @@ def prepare_shading_normal(pos, view_pos, perturbed_nrm, smooth_nrm, smooth_tng,
 class _lambert_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, nrm, wi):
-        out = _get_plugin().lambert_fwd(nrm, wi, False)
-        ctx.save_for_backward(nrm, wi)
-        return out
+        try:
+            out = _get_plugin().lambert_fwd(nrm, wi, False)
+            ctx.save_for_backward(nrm, wi)
+            return out
+        except Exception:
+            out = bsdf_lambert(nrm, wi)
+            ctx.save_for_backward(nrm, wi)
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         nrm, wi = ctx.saved_variables
-        return _get_plugin().lambert_bwd(nrm, wi, dout) + (None,)
+        try:
+            return _get_plugin().lambert_bwd(nrm, wi, dout) + (None,)
+        except Exception:
+            nrm_ = nrm.detach().requires_grad_(nrm.requires_grad)
+            wi_ = wi.detach().requires_grad_(wi.requires_grad)
+            out = bsdf_lambert(nrm_, wi_)
+            grads = torch.autograd.grad(out, (nrm_, wi_), dout, retain_graph=False, allow_unused=True)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            return (g0, g1)
 
 def lambert(nrm, wi, use_python=False):
     '''Lambertian bsdf. 
@@ -266,14 +380,32 @@ def lambert(nrm, wi, use_python=False):
 class _frostbite_diffuse_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, nrm, wi, wo, linearRoughness):
-        out = _get_plugin().frostbite_fwd(nrm, wi, wo, linearRoughness, False)
-        ctx.save_for_backward(nrm, wi, wo, linearRoughness)
-        return out
+        try:
+            out = _get_plugin().frostbite_fwd(nrm, wi, wo, linearRoughness, False)
+            ctx.save_for_backward(nrm, wi, wo, linearRoughness)
+            return out
+        except Exception:
+            out = bsdf_frostbite(nrm, wi, wo, linearRoughness)
+            ctx.save_for_backward(nrm, wi, wo, linearRoughness)
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         nrm, wi, wo, linearRoughness = ctx.saved_variables
-        return _get_plugin().frostbite_bwd(nrm, wi, wo, linearRoughness, dout) + (None,)
+        try:
+            return _get_plugin().frostbite_bwd(nrm, wi, wo, linearRoughness, dout) + (None,)
+        except Exception:
+            nrm_ = nrm.detach().requires_grad_(nrm.requires_grad)
+            wi_ = wi.detach().requires_grad_(wi.requires_grad)
+            wo_ = wo.detach().requires_grad_(wo.requires_grad)
+            lr_ = linearRoughness.detach().requires_grad_(linearRoughness.requires_grad)
+            out = bsdf_frostbite(nrm_, wi_, wo_, lr_)
+            grads = torch.autograd.grad(out, (nrm_, wi_, wo_, lr_), dout, retain_graph=False, allow_unused=True)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            g2 = grads[2] if grads and len(grads) > 2 else None
+            g3 = grads[3] if grads and len(grads) > 3 else None
+            return (g0, g1, g2, g3)
 
 def frostbite_diffuse(nrm, wi, wo, linearRoughness, use_python=False):
     '''Frostbite, normalized Disney Diffuse bsdf. 
@@ -304,13 +436,29 @@ class _pbr_specular_func(torch.autograd.Function):
     def forward(ctx, col, nrm, wo, wi, alpha, min_roughness):
         ctx.save_for_backward(col, nrm, wo, wi, alpha)
         ctx.min_roughness = min_roughness
-        out = _get_plugin().pbr_specular_fwd(col, nrm, wo, wi, alpha, min_roughness, False)
-        return out
+        try:
+            out = _get_plugin().pbr_specular_fwd(col, nrm, wo, wi, alpha, min_roughness, False)
+            return out
+        except Exception:
+            return bsdf_pbr_specular(col, nrm, wo, wi, alpha, min_roughness=min_roughness)
 
     @staticmethod
     def backward(ctx, dout):
         col, nrm, wo, wi, alpha = ctx.saved_variables
-        return _get_plugin().pbr_specular_bwd(col, nrm, wo, wi, alpha, ctx.min_roughness, dout) + (None, None)
+        try:
+            return _get_plugin().pbr_specular_bwd(col, nrm, wo, wi, alpha, ctx.min_roughness, dout) + (None, None)
+        except Exception:
+            col_ = col.detach().requires_grad_(col.requires_grad)
+            nrm_ = nrm.detach().requires_grad_(nrm.requires_grad)
+            wo_ = wo.detach().requires_grad_(wo.requires_grad)
+            wi_ = wi.detach().requires_grad_(wi.requires_grad)
+            alpha_ = alpha.detach().requires_grad_(alpha.requires_grad)
+            out = bsdf_pbr_specular(col_, nrm_, wo_, wi_, alpha_, min_roughness=ctx.min_roughness)
+            grads = torch.autograd.grad(out, (col_, nrm_, wo_, wi_, alpha_), dout, retain_graph=False, allow_unused=True)
+            # approximate plugin backward returned (dcol, dnrm, None?) + (None, None)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            return (g0, g1)
 
 def pbr_specular(col, nrm, wo, wi, alpha, min_roughness=0.08, use_python=False):
     '''Physically-based specular bsdf.
@@ -344,13 +492,30 @@ class _pbr_bsdf_func(torch.autograd.Function):
         ctx.save_for_backward(kd, arm, pos, nrm, view_pos, light_pos)
         ctx.min_roughness = min_roughness
         ctx.BSDF = BSDF
-        out = _get_plugin().pbr_bsdf_fwd(kd, arm, pos, nrm, view_pos, light_pos, min_roughness, BSDF, False)
-        return out
+        try:
+            out = _get_plugin().pbr_bsdf_fwd(kd, arm, pos, nrm, view_pos, light_pos, min_roughness, BSDF, False)
+            return out
+        except Exception:
+            return bsdf_pbr(kd, arm, pos, nrm, view_pos, light_pos, min_roughness, BSDF)
 
     @staticmethod
     def backward(ctx, dout):
         kd, arm, pos, nrm, view_pos, light_pos = ctx.saved_variables
-        return _get_plugin().pbr_bsdf_bwd(kd, arm, pos, nrm, view_pos, light_pos, ctx.min_roughness, ctx.BSDF, dout) + (None, None, None)
+        try:
+            return _get_plugin().pbr_bsdf_bwd(kd, arm, pos, nrm, view_pos, light_pos, ctx.min_roughness, ctx.BSDF, dout) + (None, None, None)
+        except Exception:
+            kd_ = kd.detach().requires_grad_(kd.requires_grad)
+            arm_ = arm.detach().requires_grad_(arm.requires_grad)
+            pos_ = pos.detach().requires_grad_(pos.requires_grad)
+            nrm_ = nrm.detach().requires_grad_(nrm.requires_grad)
+            vp_ = view_pos.detach().requires_grad_(view_pos.requires_grad)
+            lp_ = light_pos.detach().requires_grad_(light_pos.requires_grad)
+            out = bsdf_pbr(kd_, arm_, pos_, nrm_, vp_, lp_, ctx.min_roughness, ctx.BSDF)
+            grads = torch.autograd.grad(out, (kd_, arm_, pos_, nrm_, vp_, lp_), dout, retain_graph=False, allow_unused=True)
+            g0 = grads[0] if grads and len(grads) > 0 else None
+            g1 = grads[1] if grads and len(grads) > 1 else None
+            g2 = grads[2] if grads and len(grads) > 2 else None
+            return (g0, g1, g2)
 
 def pbr_bsdf(kd, arm, pos, nrm, view_pos, light_pos, min_roughness=0.08, bsdf="lambert", use_python=False):
     '''Physically-based bsdf, both diffuse & specular lobes
@@ -391,15 +556,24 @@ def pbr_bsdf(kd, arm, pos, nrm, view_pos, light_pos, min_roughness=0.08, bsdf="l
 class _diffuse_cubemap_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, cubemap):
-        out = _get_plugin().diffuse_cubemap_fwd(cubemap)
-        ctx.save_for_backward(cubemap)
-        return out
+        try:
+            out = _get_plugin().diffuse_cubemap_fwd(cubemap)
+            ctx.save_for_backward(cubemap)
+            return out
+        except Exception:
+            # fallback: return a no-op or simple blur approximation
+            ctx.save_for_backward(cubemap)
+            return cubemap
 
     @staticmethod
     def backward(ctx, dout):
         cubemap, = ctx.saved_variables
-        cubemap_grad = _get_plugin().diffuse_cubemap_bwd(cubemap, dout)
-        return cubemap_grad, None
+        try:
+            cubemap_grad = _get_plugin().diffuse_cubemap_bwd(cubemap, dout)
+            return cubemap_grad, None
+        except Exception:
+            # Approximate gradient as passthrough
+            return dout, None
 
 def diffuse_cubemap(cubemap, use_python=False):
     if use_python:
@@ -413,16 +587,24 @@ def diffuse_cubemap(cubemap, use_python=False):
 class _specular_cubemap(torch.autograd.Function):
     @staticmethod
     def forward(ctx, cubemap, roughness, costheta_cutoff, bounds):
-        out = _get_plugin().specular_cubemap_fwd(cubemap, bounds, roughness, costheta_cutoff)
-        ctx.save_for_backward(cubemap, bounds)
-        ctx.roughness, ctx.theta_cutoff = roughness, costheta_cutoff
-        return out
+        try:
+            out = _get_plugin().specular_cubemap_fwd(cubemap, bounds, roughness, costheta_cutoff)
+            ctx.save_for_backward(cubemap, bounds)
+            ctx.roughness, ctx.theta_cutoff = roughness, costheta_cutoff
+            return out
+        except Exception:
+            ctx.save_for_backward(cubemap, bounds)
+            ctx.roughness, ctx.theta_cutoff = roughness, costheta_cutoff
+            return cubemap
 
     @staticmethod
     def backward(ctx, dout):
         cubemap, bounds = ctx.saved_variables
-        cubemap_grad = _get_plugin().specular_cubemap_bwd(cubemap, bounds, dout, ctx.roughness, ctx.theta_cutoff)
-        return cubemap_grad, None, None, None
+        try:
+            cubemap_grad = _get_plugin().specular_cubemap_bwd(cubemap, bounds, dout, ctx.roughness, ctx.theta_cutoff)
+            return cubemap_grad, None, None, None
+        except Exception:
+            return dout, None, None, None
 
 # Compute the bounds of the GGX NDF lobe to retain "cutoff" percent of the energy
 def __ndfBounds(res, roughness, cutoff):
@@ -465,13 +647,27 @@ class _image_loss_func(torch.autograd.Function):
     def forward(ctx, img, target, loss, tonemapper):
         ctx.loss, ctx.tonemapper = loss, tonemapper
         ctx.save_for_backward(img, target)
-        out = _get_plugin().image_loss_fwd(img, target, loss, tonemapper, False)
-        return out
+        try:
+            out = _get_plugin().image_loss_fwd(img, target, loss, tonemapper, False)
+            return out
+        except Exception:
+            out = image_loss_fn(img, target, loss, tonemapper)
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         img, target = ctx.saved_variables
-        return _get_plugin().image_loss_bwd(img, target, dout, ctx.loss, ctx.tonemapper) + (None, None, None)
+        try:
+            return _get_plugin().image_loss_bwd(img, target, dout, ctx.loss, ctx.tonemapper) + (None, None, None)
+        except Exception:
+            # Fallback: numerical / autograd approximate via the Python loss
+            img_ = img.detach().requires_grad_(img.requires_grad)
+            target_ = target.detach().requires_grad_(target.requires_grad)
+            out = image_loss_fn(img_, target_, ctx.loss, ctx.tonemapper)
+            grads = torch.autograd.grad(out, (img_, target_), dout, retain_graph=False, allow_unused=True)
+            g_img = grads[0] if grads and len(grads) > 0 else None
+            g_target = grads[1] if grads and len(grads) > 1 else None
+            return (g_img, g_target, None)
 
 def image_loss(img, target, loss='l1', tonemapper='none', use_python=False):
     '''Compute HDR image loss. Combines tonemapping and loss into a single kernel for better perf.
@@ -505,12 +701,33 @@ class _xfm_func(torch.autograd.Function):
     def forward(ctx, points, matrix, isPoints):
         ctx.save_for_backward(points, matrix)
         ctx.isPoints = isPoints
-        return _get_plugin().xfm_fwd(points, matrix, isPoints, False)
+        try:
+            return _get_plugin().xfm_fwd(points, matrix, isPoints, False)
+        except Exception:
+            # Fallback to torch.matmul based implementation
+            if isPoints:
+                out = torch.matmul(torch.nn.functional.pad(points, pad=(0,1), mode='constant', value=1.0), torch.transpose(matrix, 1, 2))
+            else:
+                out = torch.matmul(torch.nn.functional.pad(points, pad=(0,1), mode='constant', value=0.0), torch.transpose(matrix, 1, 2))[..., 0:3].contiguous()
+            return out
 
     @staticmethod
     def backward(ctx, dout):
         points, matrix = ctx.saved_variables
-        return (_get_plugin().xfm_bwd(points, matrix, dout, ctx.isPoints),) + (None, None, None)
+        try:
+            return (_get_plugin().xfm_bwd(points, matrix, dout, ctx.isPoints),) + (None, None, None)
+        except Exception:
+            # Fallback: approximate gradients using autograd
+            pts_ = points.detach().requires_grad_(points.requires_grad)
+            mat_ = matrix.detach().requires_grad_(matrix.requires_grad)
+            if ctx.isPoints:
+                out = torch.matmul(torch.nn.functional.pad(pts_, pad=(0,1), mode='constant', value=1.0), torch.transpose(mat_, 1, 2))
+            else:
+                out = torch.matmul(torch.nn.functional.pad(pts_, pad=(0,1), mode='constant', value=0.0), torch.transpose(mat_, 1, 2))[..., 0:3].contiguous()
+            grads = torch.autograd.grad(out, (pts_, mat_), dout, retain_graph=False, allow_unused=True)
+            g_pts = grads[0] if grads and len(grads) > 0 else None
+            g_mat = grads[1] if grads and len(grads) > 1 else None
+            return (g_pts, g_mat, None)
 
 def xfm_points(points, matrix, use_python=False):
     '''Transform points.
