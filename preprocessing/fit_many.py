@@ -47,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--texture_res", type=int, nargs=2, default=[512, 512], help="Texture resolution")
     parser.add_argument("--overwrite", action="store_true", help="Re-fit even if output sample.pth already exists")
     parser.add_argument("--dry_run", action="store_true", help="Print planned jobs and exit")
+    parser.add_argument("--sanitize", action="store_true", help="Sanitize OBJ files in-place before fitting (creates .bak backups)")
     parser.add_argument(
         "--update_all_csv",
         type=Path,
@@ -179,9 +180,25 @@ def main() -> int:
         train_out_dir = preprocessing_dir / "out" / rel_out_dir
         cfg_path = preprocessing_dir / "configs" / class_id / f"{model_id}.json"
 
+        # Optionally sanitize the OBJ in-place (creates .bak backup via sanitize_obj.py)
+        if args.sanitize:
+            if args.dry_run:
+                print(f"[{idx}/{len(jobs)}] [DRY] Would sanitize: {obj_path}")
+            else:
+                try:
+                    print(f"[{idx}/{len(jobs)}] Sanitizing: {obj_path}")
+                    subprocess.run([sys.executable, "sanitize_obj.py", str(obj_path), "--inplace"], cwd=preprocessing_dir, check=True)
+                except Exception as e:  # noqa: BLE001
+                    print(f"    WARNING: sanitizer failed for {obj_path}: {e}")
+
         cfg = dict(base_cfg)
         cfg["ref_mesh"] = str(obj_path)
-        cfg["mtl_override"] = str(obj_path.with_suffix(".mtl"))
+        # Only include an mtl_override if the .mtl file actually exists. If omitted or null,
+        # train.py will use its default (None) and obj.load_obj() will fall back to parsing
+        # mtllib inside the OBJ or using the default material.
+        mtl_path = obj_path.with_suffix(".mtl")
+        if mtl_path.exists():
+            cfg["mtl_override"] = str(mtl_path)
         cfg["out_dir"] = str(rel_out_dir).replace("\\", "/")
         cfg["dmtet_grid"] = args.dmtet_grid
         cfg["iter"] = args.iter
