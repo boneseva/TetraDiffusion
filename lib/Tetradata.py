@@ -63,9 +63,9 @@ class MeshLoader(Dataset):
 
         self.vertices = [torch.tensor(np.load(f"tetrahedra/{self.grid_res}/{i}_tets.npz")['vertices'], dtype=torch.float32) for i in cube_range]
         self.tetra_cubes = [torch.tensor(np.load(f"tetrahedra/{self.grid_res}/{i}_tets.npz")['indices'], dtype=torch.int32) for i in cube_range]
-        self.neighbors = [torch.load(f"tetrahedra/{self.grid_res}/neighbors_{i}_sorted.pth", map_location="cpu").int() for i in cube_range]
-        self.upsample = [torch.load(f"tetrahedra/{self.grid_res}/upsample_{i}_sorted.pth", map_location="cpu")[0] for i in cube_range[:-1]]
-        self.downsample = [torch.load(f"tetrahedra/{self.grid_res}/downsample_{i}_sorted.pth", map_location="cpu")[0] for i in cube_range[1:]]
+        self.neighbors = [torch.load(f"tetrahedra/{self.grid_res}/neighbors_{i}_sorted.pth", map_location="cpu", weights_only=False).int() for i in cube_range]
+        self.upsample = [torch.load(f"tetrahedra/{self.grid_res}/upsample_{i}_sorted.pth", map_location="cpu", weights_only=False)[0] for i in cube_range[:-1]]
+        self.downsample = [torch.load(f"tetrahedra/{self.grid_res}/downsample_{i}_sorted.pth", map_location="cpu", weights_only=False)[0] for i in cube_range[1:]]
 
         for i in range(len(self.vertices)):
             self.vertices[i] = self.vertices[i] - torch.mean(self.vertices[i], 0)

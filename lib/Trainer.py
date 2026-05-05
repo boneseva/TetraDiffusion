@@ -55,7 +55,7 @@ class Trainer(object):
         )
 
         if self.inference:
-            self.ds = torch.load(os.path.join(config_folder, "ds.pth"))
+            self.ds = torch.load(os.path.join(config_folder, "ds.pth"), weights_only=False)
             self.ds.config = self.cfg
         else:
             self.ds = MeshLoader(config=cfg, device="cpu", cuda_device=self.device,accelerator=self.accelerator )
@@ -71,7 +71,7 @@ class Trainer(object):
             latest = max(all_weights, key=os.path.getctime)
 
             print("loading model", latest)
-            data = torch.load(latest, map_location="cpu")
+            data = torch.load(latest, map_location="cpu", weights_only=False)
             checkpoint = data['model']
             for key in list(checkpoint.keys()):
                 checkpoint[key.replace('model.', '')] = checkpoint[key]
@@ -133,7 +133,7 @@ class Trainer(object):
                 try:
                     all_weights = glob(config_folder + "/*.pt")
                     latest = max(all_weights, key=os.path.getctime)
-                    data = torch.load(latest, map_location="cpu")
+                    data = torch.load(latest, map_location="cpu", weights_only=False)
                     checkpoint = data["ema"]
                     self.ema.load_state_dict(checkpoint,strict=False)
                     print("success")
@@ -201,7 +201,7 @@ class Trainer(object):
         accelerator = self.accelerator
         device = accelerator.device
 
-        data = torch.load(str(self.config_folder / f'model-{milestone}.pt'), map_location=device)
+        data = torch.load(str(self.config_folder / f'model-{milestone}.pt'), map_location=device, weights_only=False)
 
         self.step = data['step']
         self.opt.load_state_dict(data['opt'])
