@@ -58,13 +58,16 @@ class Trainer(object):
             self.ds = torch.load(os.path.join(config_folder, "ds.pth"), weights_only=False)
             self.ds.config = self.cfg
         else:
+            print("[Trainer] Initializing MeshLoader (this may take a while if grid pruning is enabled)...")
             self.ds = MeshLoader(config=cfg, device="cpu", cuda_device=self.device,accelerator=self.accelerator )
+            print("[Trainer] MeshLoader initialization complete.")
             torch.save(self.ds, config_folder + "/ds.pth")
 
 
 
         print("mixed_precision", 'fp16' if self.cfg.training.mixed_precision else 'no')
         model = UVIT(cfg, rank=self.device, ds=self.ds)
+        print("[Trainer] UVIT model created.")
         wandb.watch(model,log_freq=10)
         if cfg.load_weights:
             all_weights = glob(config_folder+ "/*.pt")
@@ -109,8 +112,9 @@ class Trainer(object):
         self.train_num_steps = train_num_steps
 
         # dataset and dataloader
+        print(f"[Trainer] Creating DataLoader with batch_size={train_batch_size}, num_workers={cfg.num_workers}")
         dl = DataLoader(self.ds, batch_size=train_batch_size, num_workers=cfg.num_workers, shuffle=True,pin_memory=True, persistent_workers=True)
-
+        print("[Trainer] DataLoader created.")
         self.model.mask = self.ds.mask_verts
 
         optim_klass = AdamW
@@ -153,6 +157,7 @@ class Trainer(object):
         else:
             self.model, self.opt, dl = self.accelerator.prepare(self.model, self.opt, dl)
         self.dl = cycle(dl)
+        print("[Trainer] Trainer initialization complete. Ready to start training.")
 
     @property
     def device(self):

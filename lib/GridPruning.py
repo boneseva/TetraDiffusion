@@ -102,20 +102,17 @@ def mapping_index_function(keep_me,vert_indices):
 
 
 def crop_all_data(vert_list,tetra_list,neighbor_list,upsample_list,downsample_list,mask_list):#
+    print("[GridPruning] crop_all_data: started")
     #1 Step remove all unused vertices:
-
     c = 0
     cropped_vertics = []
     index_mapping_list = []### helper list to update the indices in the following loops
     for i in range(0,len(vert_list)):
-
         idx = mask_list[c].squeeze(1) != -1 ## keep all non -1
         vert_indices = torch.arange(0,len(vert_list[i]))
-
         index_mapping_list.append(vert_indices[idx])
         cropped_vertics.append(vert_list[i][idx,:])
         c += 1
-
     #
     #2 Step update tetra list
     c = 0
@@ -130,8 +127,6 @@ def crop_all_data(vert_list,tetra_list,neighbor_list,upsample_list,downsample_li
         leftover_tets = mapping_function[leftover_tets] # map all tetrahedra to their new index
         cropped_tetrahedra.append(leftover_tets)
         c+= 1
-
-
     #3 step update neighbors
     c = 0
     cropped_neighbors = []
@@ -139,71 +134,53 @@ def crop_all_data(vert_list,tetra_list,neighbor_list,upsample_list,downsample_li
         keep_me = mask_list[c].squeeze(1) != -1  ## keep all non -1
         vert_indices = index_mapping_list[c]
         mapping_function = mapping_index_function(keep_me, vert_indices)
-
         cN = mark_neighbors_as_deleted(neighbor_list[i],mask_list[c]).long()
         no_neighbor = cN == -1
         cN = mapping_function[cN]
         cN[no_neighbor] = -1
         cropped_neighbors.append(cN)
         c+=1
-
     c = 1
     cropped_upsample = []
     for i in range(0, len(upsample_list)):
         keep_me = mask_list[c].squeeze(1) != -1  ## keep all non -1 - True is
         only_upsample_to_that = upsample_list[i][keep_me]
-
         iml = index_mapping_list[c - 1]
         for j in range(len(only_upsample_to_that)):
             c_upsample = only_upsample_to_that[j]
             mask = ~torch.isin(c_upsample, iml)
             c_upsample[mask] = -1
             only_upsample_to_that[j] = c_upsample
-
         keep_me_before = mask_list[c-1].squeeze(1) != -1
         vert_indices_before = index_mapping_list[c-1]
         mapping_function = mapping_index_function(keep_me_before, vert_indices_before)
-
         no_neighbor = only_upsample_to_that == -1
-
         only_upsample_to_that = mapping_function[only_upsample_to_that]
-
         only_upsample_to_that[no_neighbor] = -1
-
-
-
         cropped_upsample.append(only_upsample_to_that)
         c+=1
-
     # 4 step update downsample - indices of high - number of low
     c = 0
     cropped_downsample = []
-
     for i in range(0, len(downsample_list)):
         keep_me = mask_list[c].squeeze(1) != -1  ## keep all non -1 - True is
-
         only_downsample_to_that = downsample_list[i][keep_me]
-
         keep_me_after = mask_list[c+1].squeeze(1) != -1
-
         iml = index_mapping_list[c+1]
         for j in range(len(only_downsample_to_that)):
             c_downsample = only_downsample_to_that[j]
+            print(f"[GridPruning] crop_all_data: torch.isin for downsample_list[{i}][{j}] (len={len(c_downsample)}) vs iml (len={len(iml)})")
             mask = ~torch.isin(c_downsample,iml)
             c_downsample[mask] = -1
             only_downsample_to_that[j] = c_downsample
-
         vert_indices_after = index_mapping_list[c+1]
         mapping_function = mapping_index_function(keep_me_after, vert_indices_after)
-
         no_neighbor = only_downsample_to_that == -1
-
         only_downsample_to_that = mapping_function[only_downsample_to_that]
         only_downsample_to_that[no_neighbor] = -1
-
         cropped_downsample.append(only_downsample_to_that)
         c+=1
-
+    print("[GridPruning] crop_all_data: finished")
     return cropped_vertics,cropped_tetrahedra,cropped_neighbors,cropped_upsample,cropped_downsample
 
 
