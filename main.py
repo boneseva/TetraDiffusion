@@ -12,6 +12,8 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 torch.set_float32_matmul_precision('high')
 torch._dynamo.config.automatic_dynamic_shapes = False
 torch._dynamo.config.cache_size_limit = 128
+torch._dynamo.config.suppress_errors = True  # suppress inductor/nvcc errors
+torch._dynamo.disable()  # disable TorchDynamo JIT compilation to avoid nvcc permission issues
 cfg = OmegaConf.merge(OmegaConf.load('config/config.yaml'), OmegaConf.load('config/path.yaml'))
 
 parser = argparse.ArgumentParser()
