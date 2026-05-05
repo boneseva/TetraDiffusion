@@ -165,7 +165,7 @@ class MeshLoader(Dataset):
 
         n = 0
         for idx in range(len(self.paths_train)):
-            sample = torch.load(self.paths_train[idx], map_location='cpu')
+            sample = torch.load(self.paths_train[idx], map_location='cpu', weights_only=False)
             sdfs, deform, color = sample[0], sample[1], sample[2]
 
             sdfs = sdfs[self.mask == 0]
@@ -246,7 +246,7 @@ class MeshLoader(Dataset):
                 if model_split != "train":
                     continue
 
-            sdfs, deform, color = torch.load(name, map_location=self.cuda_device)
+            sdfs, deform, color = torch.load(name, map_location=self.cuda_device, weights_only=False)
             sdfs = torch.tensor(sdfs).to(self.cuda_device)
             deform = torch.tensor(deform).to(self.cuda_device)
             color = torch.tensor(color).to(self.cuda_device)
@@ -356,9 +356,9 @@ class MeshLoader(Dataset):
 
     def __getitem__(self, idx):
         if self.config.dataset.training:
-            sample = torch.load(self.paths_train[idx], map_location='cpu')
+            sample = torch.load(self.paths_train[idx], map_location='cpu', weights_only=False)
         else:
-            sample = torch.load(self.paths_test[idx], map_location='cpu')
+            sample = torch.load(self.paths_test[idx], map_location='cpu', weights_only=False)
 
         sdf, displacements, colors = sample[0], sample[1], sample[2]
 
