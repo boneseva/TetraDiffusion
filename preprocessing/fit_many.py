@@ -49,6 +49,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dry_run", action="store_true", help="Print planned jobs and exit")
     parser.add_argument("--sanitize", action="store_true", help="Sanitize OBJ files in-place before fitting (creates .bak backups)")
     parser.add_argument(
+        "--category",
+        type=str,
+        default=None,
+        help="Only process this category (subdirectory name). "
+             "Lets you run one fit_many.py process per category in parallel.",
+    )
+    parser.add_argument(
         "--update_all_csv",
         type=Path,
         default=None,
@@ -147,6 +154,15 @@ def main() -> int:
         raise FileNotFoundError(f"config_template not found: {template_path}")
 
     jobs = discover_jobs(input_root, args.obj_glob)
+
+    if args.category is not None:
+        jobs = [(c, m, p) for c, m, p in jobs if c == args.category]
+        if not jobs:
+            print(f"No OBJ files found for category '{args.category}'. "
+                  f"Check --input_root and --category.")
+            return 1
+        print(f"Category filter: '{args.category}'")
+
     if not jobs:
         print("No OBJ files found. Check --input_root and --obj_glob.")
         return 1
