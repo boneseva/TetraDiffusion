@@ -19,6 +19,8 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 torch.set_float32_matmul_precision('high')
 torch._dynamo.config.automatic_dynamic_shapes = False
 torch._dynamo.config.cache_size_limit = 128
+torch._dynamo.config.suppress_errors = True  # suppress inductor/nvcc errors
+torch._dynamo.disable()  # disable TorchDynamo JIT compilation to avoid nvcc permission issues
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
@@ -36,6 +38,7 @@ def seed_everything(seed: int):
 seed_everything(42)
 parser = argparse.ArgumentParser()
 parser.add_argument('--config_path', type=str)
+parser.add_argument('--num_images', type=int, default=10, help='Number of meshes to generate (default: 10)')
 args = parser.parse_args()
 
 cfg = OmegaConf.load(os.path.join(args.config_path, "config.yaml"))
@@ -80,4 +83,4 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
 
 
 # Generate images
-generate_meshes(trainer)
+generate_meshes(trainer, num_images=args.num_images)
