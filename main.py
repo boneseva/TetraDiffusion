@@ -19,10 +19,15 @@ cfg = OmegaConf.merge(OmegaConf.load('config/config.yaml'), OmegaConf.load('conf
 parser = argparse.ArgumentParser()
 parser.add_argument('--data_path', type=str, help='Root directory of datasets.')
 parser.add_argument('--grid_res', type=int)
-parser.add_argument('--shapenet_id', type=str)
+parser.add_argument('--shapenet_id', type=str, nargs='+',
+                    help='One or more category names (space-separated) to train on.')
 parser.add_argument('--name', type=str)
 parser.add_argument('--batch_size', type=int)
 parser.add_argument('--ga', type=int)
+parser.add_argument('--num_steps', type=int, help='Total training steps (overrides config).')
+parser.add_argument('--resume', action='store_true',
+                    help='Resume training: load latest checkpoint and continue the same wandb run.')
+parser.add_argument('--wandb_project', type=str, help='Weights & Biases project name.')
 args = parser.parse_args()
 
 if args.name is not None:
@@ -36,7 +41,7 @@ if args.ga is not None:
     OmegaConf.update(cfg, 'training.ga', args.ga)
 
 if args.shapenet_id is not None:
-    OmegaConf.update(cfg, 'dataset.shapenet_ids', [args.shapenet_id])
+    OmegaConf.update(cfg, 'dataset.shapenet_ids', list(args.shapenet_id))
 
 if args.data_path is not None:
     OmegaConf.update(cfg, 'data_path', args.data_path)
@@ -44,11 +49,19 @@ if args.data_path is not None:
 if args.grid_res is not None:
     OmegaConf.update(cfg, 'dataset.grid_res', args.grid_res)
 
+if args.num_steps is not None:
+    OmegaConf.update(cfg, 'training.num_steps', args.num_steps)
+
+if args.resume:
+    OmegaConf.update(cfg, 'load_weights', True)
+
+if args.wandb_project is not None:
+    OmegaConf.update(cfg, 'wandb_project', args.wandb_project)
 
 print(cfg)
 
 import os
-os.makedirs(cfg.results_folder,exist_ok=True)
+os.makedirs(cfg.results_folder, exist_ok=True)
 
 with open(cfg.results_folder+"/config.yaml", "w") as f:
    OmegaConf.save(cfg, f)
@@ -66,6 +79,4 @@ trainer = Trainer(
     ema_decay = cfg.training.ema_decay,                # exponential moving average decay
 )
 
-#if cfg.load_weights:
-#    trainer.load(cfg.num_weights)
 trainer.train()
