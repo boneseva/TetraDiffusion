@@ -13,7 +13,7 @@
 #SBATCH --job-name=tetradiff
 #SBATCH --output=logs/slurm_%j_%x.out      # stdout  (logs/ must exist)
 #SBATCH --error=logs/slurm_%j_%x.err       # stderr
-#SBATCH --gres=gpu:1                        # number of GPUs (override with --gres=gpu:N)
+#SBATCH --gres=gpu:A100_80GB:1              # request A100 80GB (use L4:1 for quick tests)
 #SBATCH --cpus-per-task=12                  # CPU workers (matches num_workers in config)
 #SBATCH --mem=256G                           # RAM
 #SBATCH --time=48:00:00                     # wall time  (increase for long runs)
@@ -21,6 +21,11 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
+
+# ─── Move to the repo directory (SLURM runs scripts from /var/spool/...) ──────
+# SLURM_SUBMIT_DIR is always the directory where sbatch was called from.
+REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+cd "$REPO_DIR"
 
 # ─── Parse wrapper-level flags ────────────────────────────────────────────────
 CATEGORY=""
@@ -42,21 +47,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CATEGORY="${CATEGORY:-Golgi}"
 RUN_NAME="${RUN_NAME:-${CATEGORY,,}_run}"          # e.g. golgi_run
 DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
 
 # ─── Environment setup ────────────────────────────────────────────────────────
-cd "$REPO_DIR"
-mkdir -p logs
-
 # Activate conda env — adjust name if yours differs
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate TetraDiffusion
 
-export WANDB_MODE=online           # change to 'online' if you have internet on compute nodes
-export TORCHDYNAMO_DISABLE=1        # avoids nvcc permission errors on cluster nodes
+export WANDB_MODE=online
+export TORCHDYNAMO_DISABLE=1
+
+mkdir -p logs
 
 # ─── Print job info ────────────────────────────────────────────────────────────
 echo "================================================"
