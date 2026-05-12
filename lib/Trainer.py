@@ -78,9 +78,28 @@ class Trainer(object):
             self.ds = torch.load(os.path.join(config_folder, "ds.pth"), weights_only=False)
             self.ds.config = self.cfg
         else:
-            print("[Trainer] Initializing MeshLoader (this may take a while if grid pruning is enabled)...")
-            self.ds = MeshLoader(config=cfg, device="cpu", cuda_device=self.device, accelerator=self.accelerator)
-            print("[Trainer] MeshLoader initialization complete.")
+            # ── Dataset cache: keyed by category + grid_res so it is reused
+            #    across runs of the same category without rerunning GridPruning.
+            category_key = "_".join(sorted(cfg.dataset.shapenet_ids))
+            ds_cache_dir = os.path.join(cfg.data_path, "ds_cache")
+            ds_cache_path = os.path.join(ds_cache_dir, f"{category_key}_res{cfg.dataset.grid_res}.pth")
+
+            if os.path.exists(ds_cache_path):
+                print(f"[Trainer] Loading cached MeshLoader from {ds_cache_path}")
+                self.ds = torch.load(ds_cache_path, weights_only=False)
+                self.ds.config = cfg
+                print("[Trainer] Cached MeshLoader loaded.")
+            else:
+                print("[Trainer] Initializing MeshLoader (this may take a while if grid pruning is enabled)...")
+                self.ds = MeshLoader(config=cfg, device="cpu", cuda_device=self.device, accelerator=self.accelerator)
+                print("[Trainer] MeshLoader initialization complete.")
+                # Save to category-level cache
+                if self.accelerator.is_main_process:
+                    os.makedirs(ds_cache_dir, exist_ok=True)
+                    torch.save(self.ds, ds_cache_path)
+                    print(f"[Trainer] MeshLoader cached to {ds_cache_path}")
+
+            # Also save to run folder (required for inference)
             torch.save(self.ds, config_folder + "/ds.pth")
 
         print("mixed_precision", 'fp16' if self.cfg.training.mixed_precision else 'no')
