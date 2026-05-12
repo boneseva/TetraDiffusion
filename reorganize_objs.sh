@@ -67,4 +67,3 @@ echo "    --dmtet_grid 128 \\"
 echo "    --iter 3000 \\"
 echo "    --sanitize \\"
 echo "    --update_all_csv ../lib/all.csv"
-
