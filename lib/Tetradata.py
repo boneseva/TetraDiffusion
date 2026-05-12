@@ -8,7 +8,6 @@ from tqdm import tqdm
 import pandas as pd
 
 
-@torch.jit.script
 def marching_cube_get_idx(sdf_n, tet_fx4):
     num_triangles_table = torch.tensor([0, 1, 1, 2, 1, 2, 2, 1, 1, 2, 2, 1, 2, 1, 1, 0], dtype=torch.long,  device=sdf_n.device)
     with torch.no_grad():

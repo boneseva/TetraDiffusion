@@ -13,7 +13,6 @@
 #SBATCH --job-name=tetradiff
 #SBATCH --output=logs/slurm_%j_%x.out      # stdout  (logs/ must exist)
 #SBATCH --error=logs/slurm_%j_%x.err       # stderr
-#SBATCH --gres=gpu:A100_80GB:1              # request A100 80GB (use L4:1 for quick tests)
 #SBATCH --cpus-per-task=12                  # CPU workers (matches num_workers in config)
 #SBATCH --mem=256G                           # RAM
 #SBATCH --time=48:00:00                     # wall time  (increase for long runs)
@@ -56,10 +55,16 @@ DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate TetraDiffusion
 
+# Fix CUDA library path: point to the nvrtc libs bundled with the pip nvidia packages,
+# which are in a non-standard location that PyTorch's JIT compiler may not find.
+NVRTC_LIB="$(python3 -c 'import os, nvidia.cuda_nvrtc; print(os.path.join(os.path.dirname(nvidia.cuda_nvrtc.__file__), "lib"))' 2>/dev/null || echo "")"
+if [ -n "$NVRTC_LIB" ]; then
+    export LD_LIBRARY_PATH="${NVRTC_LIB}:${LD_LIBRARY_PATH:-}"
+    echo "NVRTC lib path: $NVRTC_LIB"
+fi
+
 export WANDB_MODE=online
 export TORCHDYNAMO_DISABLE=1
-
-mkdir -p logs
 
 # ─── Print job info ────────────────────────────────────────────────────────────
 echo "================================================"
