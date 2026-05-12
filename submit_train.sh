@@ -15,11 +15,9 @@
 #SBATCH --error=logs/slurm_%j_%x.err       # stderr
 #SBATCH --gres=gpu:1                        # number of GPUs (override with --gres=gpu:N)
 #SBATCH --cpus-per-task=12                  # CPU workers (matches num_workers in config)
-#SBATCH --mem=64G                           # RAM
+#SBATCH --mem=256G                           # RAM
 #SBATCH --time=48:00:00                     # wall time  (increase for long runs)
-#SBATCH --partition=gpu                     # partition name — change to match your cluster
-# #SBATCH --account=my_account             # uncomment + set if your cluster needs it
-# #SBATCH --nodelist=node01                # uncomment to pin to a specific node
+#SBATCH --partition=frida                     # partition name — change to match your cluster
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -57,7 +55,7 @@ mkdir -p logs
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate TetraDiffusion
 
-export WANDB_MODE=offline           # change to 'online' if you have internet on compute nodes
+export WANDB_MODE=online           # change to 'online' if you have internet on compute nodes
 export TORCHDYNAMO_DISABLE=1        # avoids nvcc permission errors on cluster nodes
 
 # ─── Print job info ────────────────────────────────────────────────────────────
