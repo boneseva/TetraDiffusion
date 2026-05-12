@@ -31,8 +31,8 @@ parser.add_argument('--wandb_project', type=str, help='Weights & Biases project 
 args = parser.parse_args()
 
 if args.name is not None:
-    OmegaConf.update(cfg, 'name', args.name)
-    OmegaConf.update(cfg, 'results_folder', args.name)
+    OmegaConf.update(cfg, 'name', args.name)                        # short name → wandb display name
+    OmegaConf.update(cfg, 'results_folder', f"runs/{args.name}")   # checkpoints → runs/<name>/
 
 if args.batch_size is not None:
     OmegaConf.update(cfg, 'training.batch_size', args.batch_size)

@@ -13,8 +13,8 @@
 
 # ─── SLURM directives ─────────────────────────────────────────────────────────
 #SBATCH --job-name=tetradiff
-#SBATCH --output=logs/slurm_%j_%x.out
-#SBATCH --error=logs/slurm_%j_%x.err
+#SBATCH --output=/shared/home/eva.bones/TetraDiffusion/logs/slurm_%j_%x.out
+#SBATCH --error=/shared/home/eva.bones/TetraDiffusion/logs/slurm_%j_%x.err
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=256G
@@ -56,8 +56,6 @@ WANDB_PROJECT="TetraDiffusion"
 
 # ─── Container / environment setup ───────────────────────────────────────────
 CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
-# Fallback to original image if custom one doesn't exist yet
-[ -f "$CONTAINER" ] || CONTAINER="${REPO_DIR}/pytorch2604.sqfs"
 
 # Pyxis flags: mount repo dir + home dir inside the container
 PYXIS_FLAGS="--container-image=${CONTAINER} \
@@ -66,10 +64,10 @@ PYXIS_FLAGS="--container-image=${CONTAINER} \
              --container-workdir=${REPO_DIR}"
 
 export WANDB_MODE=online
-export WANDB_DIR="${REPO_DIR}/wandb"
+export WANDB_DIR="${REPO_DIR}"          # wandb will create ${REPO_DIR}/wandb/ here (no nesting)
 export TORCHDYNAMO_DISABLE=1
 
-mkdir -p logs "${WANDB_DIR}"
+mkdir -p "${REPO_DIR}/logs" "${REPO_DIR}/wandb" "${REPO_DIR}/runs" || true
 
 # ─── Print job info ────────────────────────────────────────────────────────────
 echo "================================================"
