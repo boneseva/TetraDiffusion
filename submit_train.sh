@@ -13,6 +13,7 @@
 #SBATCH --job-name=tetradiff
 #SBATCH --output=logs/slurm_%j_%x.out      # stdout  (logs/ must exist)
 #SBATCH --error=logs/slurm_%j_%x.err       # stderr
+#SBATCH --gres=gpu:1                       # number of GPUs (adjust for multi-GPU)
 #SBATCH --cpus-per-task=12                  # CPU workers (matches num_workers in config)
 #SBATCH --mem=256G                           # RAM
 #SBATCH --time=48:00:00                     # wall time  (increase for long runs)
