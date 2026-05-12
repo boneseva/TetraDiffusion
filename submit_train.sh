@@ -7,19 +7,22 @@
 # Usage (multi GPU):
 #   sbatch --gres=gpu:2 submit_train.sh --category Golgi --multi_gpu
 #
-# Run name is auto-generated as <category_lowercase>_run.
+# Container runtime is auto-detected: Pyxis > Enroot > Singularity > Conda.
+# Run name is auto-generated as <category_lowercase>_<YYYYMMDD_HHMM>.
 # WandB project is always "TetraDiffusion".
-# All extra arguments after known flags are forwarded to main.py.
 
 # ─── SLURM directives ─────────────────────────────────────────────────────────
 #SBATCH --job-name=tetradiff
-#SBATCH --output=logs/slurm_%j_%x.out      # stdout  (logs/ must exist)
-#SBATCH --error=logs/slurm_%j_%x.err       # stderr
-#SBATCH --gres=gpu:1                       # number of GPUs (adjust for multi-GPU)
-#SBATCH --cpus-per-task=12                  # CPU workers (matches num_workers in config)
-#SBATCH --mem=256G                           # RAM
-#SBATCH --time=48:00:00                     # wall time  (increase for long runs)
-#SBATCH --partition=frida                     # partition name — change to match your cluster
+#SBATCH --output=logs/slurm_%j_%x.out
+#SBATCH --error=logs/slurm_%j_%x.err
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=256G
+#SBATCH --time=48:00:00
+#SBATCH --partition=frida
+# Pyxis container (path resolved at runtime via REPO_DIR — see below)
+# NOTE: --container-image cannot use shell variables in #SBATCH lines,
+#       so we pass it via srun/the launch command instead (see bottom).
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -51,21 +54,19 @@ RUN_NAME="${CATEGORY,,}_$(date +%Y%m%d_%H%M)"     # e.g. golgi_20260512_1423
 DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
 WANDB_PROJECT="TetraDiffusion"
 
-# ─── Environment setup ────────────────────────────────────────────────────────
-# Activate conda env — adjust name if yours differs
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate TetraDiffusion
+# ─── Container / environment setup ───────────────────────────────────────────
+CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
+# Fallback to original image if custom one doesn't exist yet
+[ -f "$CONTAINER" ] || CONTAINER="${REPO_DIR}/pytorch2604.sqfs"
 
-# Fix CUDA library path: point to the nvrtc libs bundled with the pip nvidia packages,
-# which are in a non-standard location that PyTorch's JIT compiler may not find.
-NVRTC_LIB="$(python3 -c 'import os, nvidia.cuda_nvrtc; print(os.path.join(os.path.dirname(nvidia.cuda_nvrtc.__file__), "lib"))' 2>/dev/null || echo "")"
-if [ -n "$NVRTC_LIB" ]; then
-    export LD_LIBRARY_PATH="${NVRTC_LIB}:${LD_LIBRARY_PATH:-}"
-    echo "NVRTC lib path: $NVRTC_LIB"
-fi
+# Pyxis flags: mount repo dir + home dir inside the container
+PYXIS_FLAGS="--container-image=${CONTAINER} \
+             --container-mounts=${REPO_DIR}:${REPO_DIR} \
+             --container-mount-home \
+             --container-workdir=${REPO_DIR}"
 
 export WANDB_MODE=online
-export WANDB_DIR="${REPO_DIR}/wandb"          # store all wandb run data under repo/wandb/
+export WANDB_DIR="${REPO_DIR}/wandb"
 export TORCHDYNAMO_DISABLE=1
 
 mkdir -p logs "${WANDB_DIR}"
@@ -88,7 +89,7 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 if [ "$MULTI_GPU" = true ]; then
     NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
     echo "Launching multi-GPU training on $NUM_GPUS GPUs"
-    accelerate launch \
+    srun $PYXIS_FLAGS accelerate launch \
         --multi_gpu \
         --num_processes "$NUM_GPUS" \
         --gpu_ids all \
@@ -102,7 +103,7 @@ if [ "$MULTI_GPU" = true ]; then
         "${EXTRA_ARGS[@]}"
 else
     echo "Launching single-GPU training"
-    python3 main.py \
+    srun $PYXIS_FLAGS python3 main.py \
         --data_path    "$DATA_PATH" \
         --shapenet_id  "$CATEGORY" \
         --grid_res     128 \
