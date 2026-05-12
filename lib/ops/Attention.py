@@ -12,7 +12,7 @@ from lib.ops.Misc import RMSNorm, Residual, PreNorm, l2norm
 class LinearAttention(nn.Module):
     def __init__(self, dim: int, heads: int = 4, dim_head: int = 32):
         super().__init__()
-        self.att = torch.compile(Residual(PreNorm(dim, _LinearAttention(dim, heads=heads, dim_head=dim_head))))
+        self.att = Residual(PreNorm(dim, _LinearAttention(dim, heads=heads, dim_head=dim_head)))
 
     def forward(self, x: Tensor, t: Tensor) -> Tensor:
         x = self.att(x)
@@ -22,7 +22,7 @@ class LinearAttention(nn.Module):
 class Attention(nn.Module):
     def __init__(self, dim: int, heads: int = 4, dim_head: int = 32, dropout: float = 0.0):
         super().__init__()
-        self.att = torch.compile(Residual(_Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)))
+        self.att = Residual(_Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout))
 
     def forward(self, x: Tensor, t: Tensor) -> Tensor:
         x = self.att(x)
@@ -82,19 +82,26 @@ class _Attention(nn.Module):
         self.to_out = nn.Linear(hidden_dim, dim, bias=False)
 
         device_properties = torch.cuda.get_device_properties(torch.device('cuda'))
-        self.cuda_config = AttentionConfig(True, False, False) if device_properties.major == 8 and device_properties.minor == 0 else AttentionConfig(True, True, False)
+        # A100 (sm_80): prefer flash only; everything else: allow all kernels including math fallback
+        self.cuda_config = AttentionConfig(True, False, False) if device_properties.major == 8 and device_properties.minor == 0 else AttentionConfig(True, True, True)
         self.cpu_config = AttentionConfig(True, True, True)
 
     def flash_attn(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         config = self.cuda_config if q.is_cuda else self.cpu_config
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
 
+        # SDP flash/mem-efficient kernels require half precision; cast if needed
+        orig_dtype = q.dtype
+        if orig_dtype == torch.float32:
+            q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)
+
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
             out = F.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p=self.dropout if self.training else 0.
             )
-        return out
+
+        return out.to(orig_dtype)
 
     def forward(self, x: Tensor) -> Tensor:
         b, h, c = x.shape
