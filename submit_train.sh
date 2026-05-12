@@ -28,16 +28,18 @@ set -euo pipefail
 CATEGORY=""
 RUN_NAME=""
 DATA_PATH=""
+WANDB_PROJECT=""
 MULTI_GPU=false
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --category)     CATEGORY="$2";   shift 2 ;;
-        --name)         RUN_NAME="$2";   shift 2 ;;
-        --data_path)    DATA_PATH="$2";  shift 2 ;;
-        --multi_gpu)    MULTI_GPU=true;  shift   ;;
-        *)              EXTRA_ARGS+=("$1"); shift ;;
+        --category)       CATEGORY="$2";       shift 2 ;;
+        --name)           RUN_NAME="$2";        shift 2 ;;
+        --data_path)      DATA_PATH="$2";       shift 2 ;;
+        --wandb_project)  WANDB_PROJECT="$2";   shift 2 ;;
+        --multi_gpu)      MULTI_GPU=true;       shift   ;;
+        *)                EXTRA_ARGS+=("$1");   shift   ;;
     esac
 done
 
@@ -81,22 +83,22 @@ if [ "$MULTI_GPU" = true ]; then
         --num_processes "$NUM_GPUS" \
         --gpu_ids all \
         main.py \
-        --data_path  "$DATA_PATH" \
+        --data_path   "$DATA_PATH" \
         --shapenet_id "$CATEGORY" \
-        --grid_res   128 \
-        --name       "$RUN_NAME" \
-        --batch_size 2 \
-        --wandb_project "TetraDiffusion-${CATEGORY}" \
+        --grid_res    128 \
+        --name        "$RUN_NAME" \
+        --batch_size  2 \
+        ${WANDB_PROJECT:+--wandb_project "$WANDB_PROJECT"} \
         "${EXTRA_ARGS[@]}"
 else
     echo "Launching single-GPU training"
     python3 main.py \
-        --data_path  "$DATA_PATH" \
+        --data_path   "$DATA_PATH" \
         --shapenet_id "$CATEGORY" \
-        --grid_res   128 \
-        --name       "$RUN_NAME" \
-        --batch_size 2 \
-        --wandb_project "TetraDiffusion-${CATEGORY}" \
+        --grid_res    128 \
+        --name        "$RUN_NAME" \
+        --batch_size  2 \
+        ${WANDB_PROJECT:+--wandb_project "$WANDB_PROJECT"} \
         "${EXTRA_ARGS[@]}"
 fi
 
