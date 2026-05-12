@@ -2,12 +2,14 @@
 # submit_train.sh — SLURM job submission script for TetraDiffusion training
 #
 # Usage (single GPU):
-#   sbatch submit_train.sh --category Golgi --name golgi_run
+#   sbatch submit_train.sh --category Golgi
 #
 # Usage (multi GPU):
-#   sbatch --gres=gpu:4 submit_train.sh --category Golgi --name golgi_run --multi_gpu
+#   sbatch --gres=gpu:2 submit_train.sh --category Golgi --multi_gpu
 #
-# All extra arguments after the script name are forwarded to main.py.
+# Run name is auto-generated as <category_lowercase>_run.
+# WandB project is always "TetraDiffusion".
+# All extra arguments after known flags are forwarded to main.py.
 
 # ─── SLURM directives ─────────────────────────────────────────────────────────
 #SBATCH --job-name=tetradiff
@@ -31,25 +33,23 @@ cd "$REPO_DIR"
 CATEGORY=""
 RUN_NAME=""
 DATA_PATH=""
-WANDB_PROJECT=""
 MULTI_GPU=false
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --category)       CATEGORY="$2";       shift 2 ;;
-        --name)           RUN_NAME="$2";        shift 2 ;;
-        --data_path)      DATA_PATH="$2";       shift 2 ;;
-        --wandb_project)  WANDB_PROJECT="$2";   shift 2 ;;
-        --multi_gpu)      MULTI_GPU=true;       shift   ;;
-        *)                EXTRA_ARGS+=("$1");   shift   ;;
+        --category)   CATEGORY="$2";   shift 2 ;;
+        --data_path)  DATA_PATH="$2";  shift 2 ;;
+        --multi_gpu)  MULTI_GPU=true;  shift   ;;
+        *)            EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 CATEGORY="${CATEGORY:-Golgi}"
-RUN_NAME="${RUN_NAME:-${CATEGORY,,}_run}"          # e.g. golgi_run
+RUN_NAME="${CATEGORY,,}_$(date +%Y%m%d_%H%M)"     # e.g. golgi_20260512_1423
 DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
+WANDB_PROJECT="TetraDiffusion"
 
 # ─── Environment setup ────────────────────────────────────────────────────────
 # Activate conda env — adjust name if yours differs
@@ -65,7 +65,10 @@ if [ -n "$NVRTC_LIB" ]; then
 fi
 
 export WANDB_MODE=online
+export WANDB_DIR="${REPO_DIR}/wandb"          # store all wandb run data under repo/wandb/
 export TORCHDYNAMO_DISABLE=1
+
+mkdir -p logs "${WANDB_DIR}"
 
 # ─── Print job info ────────────────────────────────────────────────────────────
 echo "================================================"
@@ -90,22 +93,22 @@ if [ "$MULTI_GPU" = true ]; then
         --num_processes "$NUM_GPUS" \
         --gpu_ids all \
         main.py \
-        --data_path   "$DATA_PATH" \
-        --shapenet_id "$CATEGORY" \
-        --grid_res    128 \
-        --name        "$RUN_NAME" \
-        --batch_size  2 \
-        ${WANDB_PROJECT:+--wandb_project "$WANDB_PROJECT"} \
+        --data_path    "$DATA_PATH" \
+        --shapenet_id  "$CATEGORY" \
+        --grid_res     128 \
+        --name         "$RUN_NAME" \
+        --batch_size   2 \
+        --wandb_project "$WANDB_PROJECT" \
         "${EXTRA_ARGS[@]}"
 else
     echo "Launching single-GPU training"
     python3 main.py \
-        --data_path   "$DATA_PATH" \
-        --shapenet_id "$CATEGORY" \
-        --grid_res    128 \
-        --name        "$RUN_NAME" \
-        --batch_size  2 \
-        ${WANDB_PROJECT:+--wandb_project "$WANDB_PROJECT"} \
+        --data_path    "$DATA_PATH" \
+        --shapenet_id  "$CATEGORY" \
+        --grid_res     128 \
+        --name         "$RUN_NAME" \
+        --batch_size   2 \
+        --wandb_project "$WANDB_PROJECT" \
         "${EXTRA_ARGS[@]}"
 fi
 
