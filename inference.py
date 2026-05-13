@@ -94,18 +94,34 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
         batch_size (int): Batch size for image generation. Default is 1.
         device_type (str): Device type for torch.autocast. Default is "cuda".
     """
-    trainer.ema.ema_model.eval()
-    trainer.ema.eval()
-    trainer.model.eval()
+    acc = trainer.accelerator
+
+    # Only run generation on the main process — avoid calling sampling on DDP wrapper
+    if not acc.is_main_process:
+        print("Not main process: skipping mesh generation on this rank.")
+        return
+
+    # Prefer EMA model if available on main process
+    sampling_model = None
+    if hasattr(trainer, 'ema') and getattr(trainer.ema, 'ema_model', None) is not None:
+        sampling_model = trainer.ema.ema_model
+    else:
+        # Unwrap any accelerator/DDP wrappers to get the underlying model with sample()
+        if hasattr(acc, 'unwrap_model'):
+            sampling_model = acc.unwrap_model(trainer.model)
+        else:
+            sampling_model = getattr(trainer.model, 'module', trainer.model)
+
+    sampling_model.eval()
 
     for k in tqdm(range(num_images), desc="Generating meshes"):
         with torch.inference_mode():
             # Use autocast only for CUDA; CPU autocast may not be available/desired
             if device_type == 'cuda':
                 with torch.autocast(device_type=device_type):
-                    all_images_list = list(trainer.model.sample(batch_size=batch_size))
+                    all_images_list = list(sampling_model.sample(batch_size=batch_size))
             else:
-                all_images_list = list(trainer.model.sample(batch_size=batch_size))
+                all_images_list = list(sampling_model.sample(batch_size=batch_size))
 
             all_images = torch.stack(all_images_list, dim=0)
             plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, cfg.results_folder, k)
