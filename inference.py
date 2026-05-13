@@ -37,11 +37,35 @@ def seed_everything(seed: int):
 # Seed the environment for reproducibility
 seed_everything(42)
 parser = argparse.ArgumentParser()
-parser.add_argument('--config_path', type=str)
+parser.add_argument('--config_path', type=str, required=True)
 parser.add_argument('--num_images', type=int, default=10, help='Number of meshes to generate (default: 10)')
+parser.add_argument('--device', type=str, choices=['cpu','cuda'], default='cuda', help='Device to run inference on')
+parser.add_argument('--cuda_device', type=int, default=0, help='CUDA device index to expose when running on CUDA')
+parser.add_argument('--wandb_offline', action='store_true', help='Force wandb into offline mode for inference')
+parser.add_argument('--force_load_weights', action='store_true', help='Force loading of model weights even if config.load_weights is false')
 args = parser.parse_args()
 
+# Optionally force wandb to offline to avoid network calls on login nodes
+if args.wandb_offline:
+    os.environ['WANDB_MODE'] = 'offline'
+    os.environ['WANDB_DISABLED'] = 'true'
+    os.environ['WANDB_SILENT'] = 'true'
+    os.environ['WANDB_API_KEY'] = ''
+
+# Configure visible CUDA devices before creating Trainer/Accelerator
+if args.device == 'cpu':
+    # Hide GPUs so torch/accelerate will pick CPU
+    os.environ['CUDA_VISIBLE_DEVICES'] = ''
+    device_type = 'cpu'
+else:
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(args.cuda_device)
+    device_type = 'cuda'
+
 cfg = OmegaConf.load(os.path.join(args.config_path, "config.yaml"))
+
+# Allow overriding config.load_weights from CLI
+if args.force_load_weights:
+    cfg.load_weights = True
 
 
 # Initialize the trainer
@@ -76,11 +100,16 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
 
     for k in tqdm(range(num_images), desc="Generating meshes"):
         with torch.inference_mode():
-            with torch.autocast(device_type=device_type):
+            # Use autocast only for CUDA; CPU autocast may not be available/desired
+            if device_type == 'cuda':
+                with torch.autocast(device_type=device_type):
+                    all_images_list = list(trainer.model.sample(batch_size=batch_size))
+            else:
                 all_images_list = list(trainer.model.sample(batch_size=batch_size))
-                all_images = torch.stack(all_images_list, dim=0)
-                plot_and_save_meshes(all_images, trainer.ds, trainer.cfg,cfg.results_folder, k)
+
+            all_images = torch.stack(all_images_list, dim=0)
+            plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, cfg.results_folder, k)
 
 
 # Generate images
-generate_meshes(trainer, num_images=args.num_images)
+generate_meshes(trainer, num_images=args.num_images, device_type=device_type)
