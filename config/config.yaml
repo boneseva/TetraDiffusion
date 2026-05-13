@@ -4,10 +4,12 @@ use_local_sgd: False
 
 # Training params
 training:
-  batch_size: 1 
-  ga:  2
+  # Effective batch = batch_size * ga.  Start here; if VRAM allows go to
+  # batch_size: 8 / ga: 1 and raise lr to 2e-4 (sqrt(4x) scaling rule).
+  batch_size: 4   # was 1 – raises GPU utilisation; lower back to 1 if OOM
+  ga: 1           # was 2 – less accumulation needed with larger batch
   ema_decay: 0.995
-  lr: 1.e-4
+  lr: 1.4e-4      # was 1e-4 – scaled by sqrt(2) for 2× effective batch
   num_steps: 400000
   test_every: 10000
   use_scheduler: False # if true ignores lr
