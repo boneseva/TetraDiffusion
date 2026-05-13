@@ -30,17 +30,19 @@ DEVICE="cuda"
 CUDA_DEVICE=0
 OUT_SUBDIR=""
 MULTI_GPU=false
+FORCE_LOAD_WEIGHTS=true
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --run_name)    RUN_NAME="$2"; shift 2 ;;
-        --num_images)  NUM_IMAGES="$2"; shift 2 ;;
-        --device)      DEVICE="$2"; shift 2 ;;
-        --cuda_device) CUDA_DEVICE="$2"; shift 2 ;;
-        --out_subdir)  OUT_SUBDIR="$2"; shift 2 ;;
-        --multi_gpu)   MULTI_GPU=true; shift   ;;
-        *)             EXTRA_ARGS+=("$1"); shift ;;
+        --run_name)           RUN_NAME="$2"; shift 2 ;;
+        --num_images)         NUM_IMAGES="$2"; shift 2 ;;
+        --device)             DEVICE="$2"; shift 2 ;;
+        --cuda_device)        CUDA_DEVICE="$2"; shift 2 ;;
+        --out_subdir)         OUT_SUBDIR="$2"; shift 2 ;;
+        --multi_gpu)          MULTI_GPU=true; shift   ;;
+        --skip_load_weights)  FORCE_LOAD_WEIGHTS=false; shift ;;
+        *)                    EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -74,13 +76,14 @@ if [[ -z "$OUT_SUBDIR" ]]; then
 fi
 
 echo "================================================"
-echo "Inference run : $RUN_NAME"
-echo "Run folder    : $RUN_DIR"
-echo "Node          : $(hostname)"
-echo "Device        : $DEVICE (cuda_device=$CUDA_DEVICE)"
-echo "Multi-GPU     : $MULTI_GPU"
-echo "Repo dir      : $REPO_DIR"
-echo "Date          : $(date)"
+echo "Inference run     : $RUN_NAME"
+echo "Run folder        : $RUN_DIR"
+echo "Node              : $(hostname)"
+echo "Device            : $DEVICE (cuda_device=$CUDA_DEVICE)"
+echo "Multi-GPU         : $MULTI_GPU"
+echo "Force load weights: $FORCE_LOAD_WEIGHTS"
+echo "Repo dir          : $REPO_DIR"
+echo "Date              : $(date)"
 echo "================================================"
 
 if [ ! -d "$RUN_DIR" ]; then
@@ -95,19 +98,22 @@ ls -la "$RUN_DIR" || true
 if [ "$MULTI_GPU" = true ]; then
     NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
     echo "Launching multi-GPU inference on $NUM_GPUS GPUs"
-    srun $PYXIS_FLAGS accelerate launch \
-        --multi_gpu --num_processes "$NUM_GPUS" --gpu_ids all \
-        inference.py --config_path "$RUN_DIR" --num_images "$NUM_IMAGES" --device cuda --cuda_device "$CUDA_DEVICE" "${EXTRA_ARGS[@]}"
+    INFERENCE_CMD="accelerate launch --multi_gpu --num_processes $NUM_GPUS --gpu_ids all inference.py --config_path $RUN_DIR --num_images $NUM_IMAGES --device cuda --cuda_device $CUDA_DEVICE"
+
+    if [ "$FORCE_LOAD_WEIGHTS" = true ]; then
+        INFERENCE_CMD="$INFERENCE_CMD --force_load_weights"
+    fi
+
+    srun $PYXIS_FLAGS $INFERENCE_CMD "${EXTRA_ARGS[@]}"
 else
     echo "Launching single-node inference"
-    srun $PYXIS_FLAGS python3 inference.py \
-        --config_path "$RUN_DIR" \
-        --num_images "$NUM_IMAGES" \
-        --device "$DEVICE" \
-        --cuda_device "$CUDA_DEVICE" \
-        --out_subdir "$OUT_SUBDIR" \
-        --wandb_offline \
-        "${EXTRA_ARGS[@]}"
+    INFERENCE_CMD="python3 inference.py --config_path $RUN_DIR --num_images $NUM_IMAGES --device $DEVICE --cuda_device $CUDA_DEVICE --out_subdir $OUT_SUBDIR --wandb_offline"
+
+    if [ "$FORCE_LOAD_WEIGHTS" = true ]; then
+        INFERENCE_CMD="$INFERENCE_CMD --force_load_weights"
+    fi
+
+    srun $PYXIS_FLAGS $INFERENCE_CMD "${EXTRA_ARGS[@]}"
 fi
 
 echo "================================================"
