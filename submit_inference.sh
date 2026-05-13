@@ -28,17 +28,19 @@ RUN_NAME=""
 NUM_IMAGES=8
 DEVICE="cuda"
 CUDA_DEVICE=0
+OUT_SUBDIR=""
 MULTI_GPU=false
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --run_name)   RUN_NAME="$2"; shift 2 ;;
-        --num_images) NUM_IMAGES="$2"; shift 2 ;;
-        --device)     DEVICE="$2"; shift 2 ;;
-        --cuda_device)CUDA_DEVICE="$2"; shift 2 ;;
-        --multi_gpu)  MULTI_GPU=true; shift   ;;
-        *)            EXTRA_ARGS+=("$1"); shift ;;
+        --run_name)    RUN_NAME="$2"; shift 2 ;;
+        --num_images)  NUM_IMAGES="$2"; shift 2 ;;
+        --device)      DEVICE="$2"; shift 2 ;;
+        --cuda_device) CUDA_DEVICE="$2"; shift 2 ;;
+        --out_subdir)  OUT_SUBDIR="$2"; shift 2 ;;
+        --multi_gpu)   MULTI_GPU=true; shift   ;;
+        *)             EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -65,6 +67,11 @@ export TORCHDYNAMO_DISABLE=1
 mkdir -p "${REPO_DIR}/logs" "${REPO_DIR}/wandb" "${REPO_DIR}/runs" || true
 
 RUN_DIR="${REPO_DIR}/runs/${RUN_NAME}"
+
+# Default out subdir if not provided
+if [[ -z "$OUT_SUBDIR" ]]; then
+    OUT_SUBDIR="inference_$(date +%Y%m%d_%H%M%S)"
+fi
 
 echo "================================================"
 echo "Inference run : $RUN_NAME"
@@ -98,6 +105,7 @@ else
         --num_images "$NUM_IMAGES" \
         --device "$DEVICE" \
         --cuda_device "$CUDA_DEVICE" \
+        --out_subdir "$OUT_SUBDIR" \
         --wandb_offline \
         "${EXTRA_ARGS[@]}"
 fi

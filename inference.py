@@ -8,6 +8,7 @@ from lib.Trainer import Trainer
 from lib.ops.Utils import plot_and_save_meshes
 import argparse 
 import warnings
+import datetime
 
 # Suppress specific warnings - it doesnt matter in inference
 warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True. Gradients will be None", category=UserWarning)
@@ -43,6 +44,8 @@ parser.add_argument('--device', type=str, choices=['cpu','cuda'], default='cuda'
 parser.add_argument('--cuda_device', type=int, default=0, help='CUDA device index to expose when running on CUDA')
 parser.add_argument('--wandb_offline', action='store_true', help='Force wandb into offline mode for inference')
 parser.add_argument('--force_load_weights', action='store_true', help='Force loading of model weights even if config.load_weights is false')
+parser.add_argument('--out_subdir', type=str, default=None, help='Subdirectory inside the run results folder to write inference outputs (default: inference_TIMESTAMP)')
+parser.add_argument('--out_dir', type=str, default=None, help='Explicit output directory (overrides out_subdir and cfg.results_folder)')
 args = parser.parse_args()
 
 # Optionally force wandb to offline to avoid network calls on login nodes
@@ -124,8 +127,22 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
                 all_images_list = list(sampling_model.sample(batch_size=batch_size))
 
             all_images = torch.stack(all_images_list, dim=0)
-            plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, cfg.results_folder, k)
+            plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, output_dir, k)
 
 
 # Generate images
+# Prepare output directory: priority --out_dir > cfg.results_folder/out_subdir > cfg.results_folder
+if args.out_dir:
+    output_dir = args.out_dir
+else:
+    if args.out_subdir:
+        sub = args.out_subdir
+    else:
+        sub = f"inference_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    output_dir = os.path.join(cfg.results_folder, sub)
+
+os.makedirs(output_dir, exist_ok=True)
+
+print(f"[inference] writing outputs to: {output_dir}")
+
 generate_meshes(trainer, num_images=args.num_images, device_type=device_type)
