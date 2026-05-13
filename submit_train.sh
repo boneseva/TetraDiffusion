@@ -96,7 +96,8 @@ if [ "$MULTI_GPU" = true ]; then
         --shapenet_id  "$CATEGORY" \
         --grid_res     128 \
         --name         "$RUN_NAME" \
-        --batch_size   2 \
+        --batch_size   4 \
+        --ga           1 \
         --wandb_project "$WANDB_PROJECT" \
         "${EXTRA_ARGS[@]}"
 else
@@ -106,7 +107,8 @@ else
         --shapenet_id  "$CATEGORY" \
         --grid_res     128 \
         --name         "$RUN_NAME" \
-        --batch_size   2 \
+        --batch_size   4 \
+        --ga           1 \
         --wandb_project "$WANDB_PROJECT" \
         "${EXTRA_ARGS[@]}"
 fi
