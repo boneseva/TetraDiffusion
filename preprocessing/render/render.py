@@ -147,6 +147,13 @@ def render_layer(
         rast_out_s = rast
         rast_out_deriv_s = rast_deriv
 
+    # Sanity checks: make sure mesh has necessary attributes
+    if mesh is None:
+        raise ValueError("render_layer: mesh is None")
+    if getattr(mesh, 'v_pos', None) is None:
+        raise ValueError("render_layer: mesh.v_pos is None")
+    if getattr(mesh, 't_pos_idx', None) is None:
+        raise ValueError(f"render_layer: mesh.t_pos_idx is None for mesh with v_pos.shape={tuple(mesh.v_pos.shape) if mesh.v_pos is not None else None}")
     ################################################################################
     # Interpolate attributes
     ################################################################################

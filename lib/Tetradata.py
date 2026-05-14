@@ -215,7 +215,13 @@ class MeshLoader(Dataset):
         except:
             self.splits = pd.read_csv("all.csv")
 
-        root = Path(f'{self.config.data_path}/preprocessed_data/samples/')
+        # Use an organelle-specific subdirectory so that preprocessing runs for
+        # different organelles never overwrite each other's cached sample files.
+        # Without this, a second organelle's training would silently overwrite
+        # sample_*.pt files referenced by the first organelle's ds_cache, causing
+        # the model to train on the wrong organelle's preprocessed data.
+        category_key = "_".join(sorted(self.config.dataset.shapenet_ids))
+        root = Path(f'{self.config.data_path}/preprocessed_data/samples/{category_key}/')
         root.mkdir(parents=True, exist_ok=True)
         (root / 'train').mkdir(parents=True, exist_ok=True)
         (root / 'val').mkdir(parents=True, exist_ok=True)

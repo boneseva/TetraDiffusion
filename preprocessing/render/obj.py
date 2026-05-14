@@ -144,7 +144,11 @@ def load_obj(filename, clear_ks=True, mtl_override=None, scale=0.95):
                 faces.append([v0, v1, v2])
                 tfaces.append([t0, t1, t2])
                 nfaces.append([n0, n1, n2])
+    # Ensure we actually parsed faces and vertices
     assert len(tfaces) == len(faces) and len(nfaces) == len (faces)
+    if len(vertices) == 0 or len(faces) == 0:
+        # Provide a clearer error for empty/degenerate OBJ files instead of failing later on tensor reductions
+        raise ValueError(f"OBJ parsing produced no vertices or faces: {filename}")
 
     # Create an "uber" material by combining all textures into a larger texture
     if len(used_materials) > 1:

@@ -167,8 +167,16 @@ from pytorch3d.transforms import RotateAxisAngle
 def _center(mesh, scale=0.95):
     #scale = 0.95
     print(f"Scaling mesh with {scale}")
+    # Guard against empty vertex arrays to provide a clearer error upstream
+    if mesh.v_pos is None or mesh.v_pos.numel() == 0:
+        raise ValueError("Attempting to center an empty mesh (no vertices).")
+
     center = (mesh.v_pos.max(0)[0] + mesh.v_pos.min(0)[0]) / 2
     max_l = (mesh.v_pos.max(0)[0] - mesh.v_pos.min(0)[0]).max()
+    # Avoid division by zero for degenerate bounding boxes
+    if max_l == 0:
+        raise ValueError("Mesh has zero size in all dimensions (degenerate).")
+
     mesh.v_pos = ((mesh.v_pos - center) / max_l) * scale
     #rot_z_90 = RotateAxisAngle(90, axis="Y", degrees=True).to("cuda")
     #mesh.v_pos = rot_z_90.transform_points(mesh.v_pos)
