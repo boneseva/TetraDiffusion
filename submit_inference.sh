@@ -3,7 +3,8 @@
 #
 # Usage:
 #   sbatch submit_inference.sh
-#   sbatch submit_inference.sh --run_name er_20260513_0727 --num_images 8
+#   sbatch submit_inference.sh --run_name er_20260513_0727 --comparison_mode --num_images 8
+#   sbatch submit_inference.sh --run_name er_20260513_0727 --generation_mode --num_images 8
 #   sbatch submit_inference.sh --list_runs
 #
 # Container runtime is auto-detected the same way as submit_train.sh.
@@ -34,6 +35,7 @@ OUT_SUBDIR=""
 MULTI_GPU=false
 FORCE_LOAD_WEIGHTS=true
 LIST_RUNS=false
+INFERENCE_MODE=""
 EXTRA_ARGS=()
 
 is_inference_ready_run() {
@@ -94,12 +96,27 @@ while [[ $# -gt 0 ]]; do
         --device)             DEVICE="$2"; shift 2 ;;
         --cuda_device)        CUDA_DEVICE="$2"; shift 2 ;;
         --out_subdir)         OUT_SUBDIR="$2"; shift 2 ;;
+        --comparison_mode)    [[ -n "$INFERENCE_MODE" && "$INFERENCE_MODE" != "comparison" ]] && { echo "ERROR: conflicting inference mode flags"; exit 1; }
+                              INFERENCE_MODE="comparison"; shift ;;
+        --generation_mode)    [[ -n "$INFERENCE_MODE" && "$INFERENCE_MODE" != "generation" ]] && { echo "ERROR: conflicting inference mode flags"; exit 1; }
+                              INFERENCE_MODE="generation"; shift ;;
+        --stochastic_sampling) [[ -n "$INFERENCE_MODE" && "$INFERENCE_MODE" != "generation" ]] && { echo "ERROR: conflicting inference mode flags"; exit 1; }
+                              INFERENCE_MODE="generation"; EXTRA_ARGS+=("$1"); shift ;;
         --multi_gpu)          MULTI_GPU=true; shift   ;;
         --skip_load_weights)  FORCE_LOAD_WEIGHTS=false; shift ;;
         --list_runs)          LIST_RUNS=true; shift ;;
         *)                    EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
+
+if [[ "$INFERENCE_MODE" == "" ]]; then
+    INFERENCE_MODE="comparison"
+    EXTRA_ARGS=(--comparison_mode "${EXTRA_ARGS[@]}")
+elif [[ "$INFERENCE_MODE" == "comparison" ]]; then
+    EXTRA_ARGS=(--comparison_mode "${EXTRA_ARGS[@]}")
+elif [[ "$INFERENCE_MODE" == "generation" ]]; then
+    EXTRA_ARGS=(--generation_mode "${EXTRA_ARGS[@]}")
+fi
 
 # Defaults
 DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
@@ -149,6 +166,7 @@ echo "Run folder        : $RUN_DIR"
 echo "Node              : $(hostname)"
 echo "Device            : $DEVICE (cuda_device=$CUDA_DEVICE)"
 echo "Multi-GPU         : $MULTI_GPU"
+echo "Inference mode    : $INFERENCE_MODE"
 echo "Force load weights: $FORCE_LOAD_WEIGHTS"
 echo "Repo dir          : $REPO_DIR"
 echo "Date              : $(date)"

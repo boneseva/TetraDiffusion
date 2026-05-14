@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import Counter, defaultdict
 import trimesh
 import torch
 
@@ -14,8 +15,19 @@ def plot_and_save_meshes(all_meshes, dataset, config, name, k, file_prefix=None)
         name (str): Base name for saving mesh files.
         k (int): Index for naming the files.
     """
+    step_counts = list(config.diffusion.sampling_steps)
+    total_per_step = Counter(step_counts)
+    seen_per_step = defaultdict(int)
+
     for i, mesh in enumerate(all_meshes):
         mesh = mesh.unsqueeze(0)
+        step_count = step_counts[i]
+        variant_index = seen_per_step[step_count]
+        seen_per_step[step_count] += 1
+
+        step_label = f"stepsize_{step_count}"
+        if total_per_step[step_count] > 1:
+            step_label = f"{step_label}_variant_{variant_index}"
 
         if config.dataset.color:
             mesh_verts, mesh_color, mesh_faces = dataset.get_mesh(mesh)
@@ -29,7 +41,7 @@ def plot_and_save_meshes(all_meshes, dataset, config, name, k, file_prefix=None)
             mesh_faces,
             name,
             k,
-            f"stepsize_{config.diffusion.sampling_steps[i]}",
+            step_label,
             config.dataset.color,
             file_prefix=file_prefix,
         )

@@ -10,6 +10,7 @@ import argparse
 import warnings
 import datetime
 import re
+import json
 
 # Suppress specific warnings - it doesnt matter in inference
 warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True. Gradients will be None", category=UserWarning)
@@ -47,7 +48,26 @@ parser.add_argument('--wandb_offline', action='store_true', help='Force wandb in
 parser.add_argument('--force_load_weights', action='store_true', help='Force loading of model weights even if config.load_weights is false')
 parser.add_argument('--out_subdir', type=str, default=None, help='Subdirectory inside the run results folder to write inference outputs (default: organelle-aware inference folder name)')
 parser.add_argument('--out_dir', type=str, default=None, help='Explicit output directory (overrides out_subdir and cfg.results_folder)')
+parser.add_argument('--comparison_mode', action='store_true', help='Use deterministic comparison mode: shared initial noise and deterministic reverse sampling')
+parser.add_argument('--generation_mode', action='store_true', help='Use stochastic generation mode: shared initial noise but stochastic reverse sampling')
+parser.add_argument('--stochastic_sampling', action='store_true', help='Use stochastic reverse sampling instead of deterministic comparison mode')
 args = parser.parse_args()
+
+
+def _resolve_inference_mode(parser, args):
+    if args.comparison_mode and args.generation_mode:
+        parser.error("--comparison_mode and --generation_mode cannot be used together")
+
+    if args.comparison_mode and args.stochastic_sampling:
+        parser.error("--comparison_mode conflicts with --stochastic_sampling")
+
+    if args.generation_mode or args.stochastic_sampling:
+        return "generation", False
+
+    return "comparison", True
+
+
+inference_mode, deterministic_sampling = _resolve_inference_mode(parser, args)
 
 # Optionally force wandb to offline to avoid network calls on login nodes
 if args.wandb_offline:
@@ -66,6 +86,19 @@ else:
     device_type = 'cuda'
 
 cfg = OmegaConf.load(os.path.join(args.config_path, "config.yaml"))
+original_sampling_steps = []
+
+# For inference comparisons, keep only the first occurrence of each sampling step
+# so repeated entries like [32, 32, 64, 64] become [32, 64].
+if getattr(getattr(cfg, 'diffusion', None), 'sampling_steps', None):
+    sampling_steps = list(cfg.diffusion.sampling_steps)
+    original_sampling_steps = sampling_steps.copy()
+    unique_sampling_steps = list(dict.fromkeys(sampling_steps))
+    if unique_sampling_steps != sampling_steps:
+        print(f"[inference] using unique sampling_steps for comparison: {unique_sampling_steps} (from {sampling_steps})")
+        cfg.diffusion.sampling_steps = unique_sampling_steps
+
+effective_sampling_steps = list(getattr(getattr(cfg, 'diffusion', None), 'sampling_steps', []))
 
 # Allow overriding config.load_weights from CLI
 if args.force_load_weights:
@@ -100,6 +133,37 @@ def _get_default_output_subdir(cfg, config_path):
         return f"inference_{run_name}_{timestamp}"
 
     return f"inference_{organelle_name}_{run_name}_{timestamp}"
+
+
+def _build_inference_manifest(cfg, args, output_dir, original_steps, effective_steps):
+    organelle_name = _get_organelle_name(cfg)
+    run_name = getattr(cfg, 'name', None) or os.path.basename(os.path.normpath(args.config_path))
+    return {
+        "created_at": datetime.datetime.now().isoformat(),
+        "run_name": run_name,
+        "organelle": organelle_name,
+        "config_path": os.path.abspath(args.config_path),
+        "output_dir": os.path.abspath(output_dir),
+        "num_images": args.num_images,
+        "device": args.device,
+        "inference_mode": inference_mode,
+        "same_initial_noise_across_sampling_steps": True,
+        "deterministic_reverse_sampling": deterministic_sampling,
+        "original_sampling_steps": original_steps,
+        "effective_sampling_steps": effective_steps,
+        "sampling_steps_deduplicated_for_comparison": original_steps != effective_steps,
+        "filename_step_label": "stepsize_<n>",
+        "filename_step_label_note": "For backwards compatibility filenames still use 'stepsize_<n>', but <n> is the number of diffusion sampling steps.",
+        "comparison_note": "All effective sampling step counts start from the same initial latent noise within each generated sample index.",
+        "deterministic_note": "When deterministic_reverse_sampling is true, intermediate reverse-process noise injection is disabled for stricter paired comparisons across different numbers of sampling steps.",
+    }
+
+
+def _write_inference_manifest(output_dir, manifest):
+    manifest_path = os.path.join(output_dir, "inference_manifest.json")
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"[inference] wrote comparison manifest to: {manifest_path}")
 
 
 # Initialize the trainer
@@ -154,9 +218,9 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
             # Use autocast only for CUDA; CPU autocast may not be available/desired
             if device_type == 'cuda':
                 with torch.autocast(device_type=device_type):
-                    all_images_list = list(sampling_model.sample(batch_size=batch_size))
+                    all_images_list = list(sampling_model.sample(batch_size=batch_size, deterministic=deterministic_sampling))
             else:
-                all_images_list = list(sampling_model.sample(batch_size=batch_size))
+                all_images_list = list(sampling_model.sample(batch_size=batch_size, deterministic=deterministic_sampling))
 
             all_images = torch.stack(all_images_list, dim=0)
             plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, output_dir, k, file_prefix=organelle_prefix)
@@ -176,5 +240,17 @@ else:
 os.makedirs(output_dir, exist_ok=True)
 
 print(f"[inference] writing outputs to: {output_dir}")
+print(f"[inference] comparison sampling_steps: {effective_sampling_steps}")
+print(f"[inference] inference mode: {inference_mode}")
+print(f"[inference] deterministic reverse sampling: {deterministic_sampling}")
+
+manifest = _build_inference_manifest(
+    cfg,
+    args,
+    output_dir,
+    original_sampling_steps,
+    effective_sampling_steps,
+)
+_write_inference_manifest(output_dir, manifest)
 
 generate_meshes(trainer, num_images=args.num_images, device_type=device_type)

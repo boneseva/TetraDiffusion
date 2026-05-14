@@ -138,22 +138,25 @@ class GaussianDiffusion(nn.Module):
         return model_mean, posterior_variance
 
     @torch.no_grad()
-    def p_sample(self, x: Tensor, time: Tensor, time_next: Tensor) -> Tensor:
+    def p_sample(self, x: Tensor, time: Tensor, time_next: Tensor, deterministic: bool = False) -> Tensor:
         model_mean, model_variance = self.p_mean_variance(x=x, time=time, time_next=time_next)
-        if time_next == 0:
+        if time_next == 0 or deterministic:
             return model_mean
         noise = torch.randn_like(x)
         return model_mean + sqrt(model_variance) * noise
 
     @torch.no_grad()
-    def p_sample_loop(self, shape: tuple) -> Tensor:
-        img = torch.randn(shape, device=self.device)
+    def p_sample_loop(self, shape: tuple, initial_noise: Tensor = None, deterministic: bool = False) -> Tensor:
+        if initial_noise is None:
+            img = torch.randn(shape, device=self.device)
+        else:
+            img = initial_noise.clone().to(self.device)
         steps = torch.linspace(1., 0., self.num_sample_steps + 1, device=self.device)
 
         for i in tqdm(range(self.num_sample_steps), desc='sampling loop time step', total=self.num_sample_steps):
             times = steps[i]
             times_next = steps[i + 1]
-            img = self.p_sample(img, times, times_next)
+            img = self.p_sample(img, times, times_next, deterministic=deterministic)
 
         img.clamp_(-1., 1.)
         img = unnormalize_to_zero_to_one(img)
@@ -161,12 +164,17 @@ class GaussianDiffusion(nn.Module):
         return img
 
     @torch.no_grad()
-    def sample(self, batch_size: int = 16) -> Tensor:
+    def sample(self, batch_size: int = 16, deterministic: bool = False) -> Tensor:
         num_sample_steps = self.cfg.diffusion.sampling_steps
         shapes = []
+        base_noise = torch.randn((batch_size, self.num_verts, self.channels), device=self.device)
         for nss in num_sample_steps:
             self.num_sample_steps = nss
-            result = self.p_sample_loop((batch_size, self.num_verts, self.channels))
+            result = self.p_sample_loop(
+                (batch_size, self.num_verts, self.channels),
+                initial_noise=base_noise,
+                deterministic=deterministic,
+            )
             shapes.append(result)
         return torch.cat(shapes, 0)
 

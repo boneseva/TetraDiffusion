@@ -13,12 +13,15 @@
 #   --device              Device to use: cuda or cpu (default: cuda)
 #   --cuda_device         GPU device index (default: 0)
 #   --out_subdir          Custom output subdirectory inside each run folder
+#   --comparison_mode     Deterministic comparison mode (default)
+#   --generation_mode     Stochastic generation mode
 #   --multi_gpu           Use multi-GPU inference (default: single GPU)
 #   --skip_load_weights   Do NOT force load trained weights (not recommended)
 #   --list_runs           Print available inference-ready runs and exit
 #
 # IMPORTANT: By default this script submits one SLURM job per inference-ready run.
 #            Inference-ready = has config.yaml + ds.pth + at least one model-*.pt checkpoint.
+#            Default inference mode is --comparison_mode so the run logs clearly show deterministic comparison behavior.
 #            Use --run_name to restrict to a single run.
 #
 set -euo pipefail
@@ -29,6 +32,7 @@ RUNS_DIR="${SCRIPT_DIR}/runs"
 RUN_NAME=""
 FORCE_LOAD_WEIGHTS=true
 LIST_RUNS=false
+INFERENCE_MODE=""
 PASSTHROUGH_ARGS=()   # flags forwarded to every sbatch call (excludes --run_name, --list_runs)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -87,11 +91,27 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--run_name)           RUN_NAME="$2";               shift 2 ;;
 		--list_runs)          LIST_RUNS=true;               shift   ;;
+		--comparison_mode)    [[ -n "$INFERENCE_MODE" && "$INFERENCE_MODE" != "comparison" ]] && { echo "ERROR: conflicting inference mode flags"; exit 1; }
+		                      INFERENCE_MODE="comparison"; shift   ;;
+		--generation_mode)    [[ -n "$INFERENCE_MODE" && "$INFERENCE_MODE" != "generation" ]] && { echo "ERROR: conflicting inference mode flags"; exit 1; }
+		                      INFERENCE_MODE="generation"; shift   ;;
+		--stochastic_sampling) [[ -n "$INFERENCE_MODE" && "$INFERENCE_MODE" != "generation" ]] && { echo "ERROR: conflicting inference mode flags"; exit 1; }
+		                      INFERENCE_MODE="generation"
+		                      PASSTHROUGH_ARGS+=("$1");     shift   ;;
 		--skip_load_weights)  FORCE_LOAD_WEIGHTS=false
 		                      PASSTHROUGH_ARGS+=("$1");     shift   ;;
 		*)                    PASSTHROUGH_ARGS+=("$1");     shift   ;;
 	esac
 done
+
+if [[ "$INFERENCE_MODE" == "" ]]; then
+	INFERENCE_MODE="generation"
+	PASSTHROUGH_ARGS=(--comparison_mode "${PASSTHROUGH_ARGS[@]}")
+elif [[ "$INFERENCE_MODE" == "comparison" ]]; then
+	PASSTHROUGH_ARGS=(--comparison_mode "${PASSTHROUGH_ARGS[@]}")
+elif [[ "$INFERENCE_MODE" == "generation" ]]; then
+	PASSTHROUGH_ARGS=(--generation_mode "${PASSTHROUGH_ARGS[@]}")
+fi
 
 # ── list mode ─────────────────────────────────────────────────────────────────
 
@@ -129,6 +149,7 @@ fi
 # ── submit one SLURM job per run ──────────────────────────────────────────────
 
 echo "Submitting ${#SUBMIT_RUNS[@]} inference job(s)..."
+echo "Inference mode: ${INFERENCE_MODE}"
 echo ""
 
 for run in "${SUBMIT_RUNS[@]}"; do
