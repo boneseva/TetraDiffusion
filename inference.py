@@ -9,6 +9,7 @@ from lib.ops.Utils import plot_and_save_meshes
 import argparse 
 import warnings
 import datetime
+import re
 
 # Suppress specific warnings - it doesnt matter in inference
 warnings.filterwarnings("ignore", message="None of the inputs have requires_grad=True. Gradients will be None", category=UserWarning)
@@ -44,7 +45,7 @@ parser.add_argument('--device', type=str, choices=['cpu','cuda'], default='cuda'
 parser.add_argument('--cuda_device', type=int, default=0, help='CUDA device index to expose when running on CUDA')
 parser.add_argument('--wandb_offline', action='store_true', help='Force wandb into offline mode for inference')
 parser.add_argument('--force_load_weights', action='store_true', help='Force loading of model weights even if config.load_weights is false')
-parser.add_argument('--out_subdir', type=str, default=None, help='Subdirectory inside the run results folder to write inference outputs (default: inference_TIMESTAMP)')
+parser.add_argument('--out_subdir', type=str, default=None, help='Subdirectory inside the run results folder to write inference outputs (default: organelle-aware inference folder name)')
 parser.add_argument('--out_dir', type=str, default=None, help='Explicit output directory (overrides out_subdir and cfg.results_folder)')
 args = parser.parse_args()
 
@@ -69,6 +70,36 @@ cfg = OmegaConf.load(os.path.join(args.config_path, "config.yaml"))
 # Allow overriding config.load_weights from CLI
 if args.force_load_weights:
     cfg.load_weights = True
+
+
+def _sanitize_name_component(value, fallback="sample"):
+    value = str(value or "").strip()
+    if not value:
+        return fallback
+    value = re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+    value = value.strip("._-")
+    return value or fallback
+
+
+def _get_organelle_name(cfg):
+    shapenet_ids = getattr(getattr(cfg, 'dataset', None), 'shapenet_ids', None)
+    if shapenet_ids:
+        return _sanitize_name_component(shapenet_ids[0], fallback="sample")
+    return _sanitize_name_component(getattr(cfg, 'name', None), fallback="sample")
+
+
+def _get_default_output_subdir(cfg, config_path):
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    run_name = _sanitize_name_component(
+        getattr(cfg, 'name', None) or os.path.basename(os.path.normpath(config_path)),
+        fallback="run"
+    )
+    organelle_name = _get_organelle_name(cfg)
+
+    if organelle_name.lower() in run_name.lower():
+        return f"inference_{run_name}_{timestamp}"
+
+    return f"inference_{organelle_name}_{run_name}_{timestamp}"
 
 
 # Initialize the trainer
@@ -116,6 +147,7 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
             sampling_model = getattr(trainer.model, 'module', trainer.model)
 
     sampling_model.eval()
+    organelle_prefix = _get_organelle_name(trainer.cfg)
 
     for k in tqdm(range(num_images), desc="Generating meshes"):
         with torch.inference_mode():
@@ -127,7 +159,7 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
                 all_images_list = list(sampling_model.sample(batch_size=batch_size))
 
             all_images = torch.stack(all_images_list, dim=0)
-            plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, output_dir, k)
+            plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, output_dir, k, file_prefix=organelle_prefix)
 
 
 # Generate images
@@ -138,7 +170,7 @@ else:
     if args.out_subdir:
         sub = args.out_subdir
     else:
-        sub = f"inference_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        sub = _get_default_output_subdir(cfg, args.config_path)
     output_dir = os.path.join(cfg.results_folder, sub)
 
 os.makedirs(output_dir, exist_ok=True)

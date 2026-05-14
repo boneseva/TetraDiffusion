@@ -70,11 +70,6 @@ mkdir -p "${REPO_DIR}/logs" "${REPO_DIR}/wandb" "${REPO_DIR}/runs" || true
 
 RUN_DIR="${REPO_DIR}/runs/${RUN_NAME}"
 
-# Default out subdir if not provided
-if [[ -z "$OUT_SUBDIR" ]]; then
-    OUT_SUBDIR="inference_$(date +%Y%m%d_%H%M%S)"
-fi
-
 echo "================================================"
 echo "Inference run     : $RUN_NAME"
 echo "Run folder        : $RUN_DIR"
@@ -100,6 +95,12 @@ if [ "$MULTI_GPU" = true ]; then
     echo "Launching multi-GPU inference on $NUM_GPUS GPUs"
     INFERENCE_CMD="accelerate launch --multi_gpu --num_processes $NUM_GPUS --gpu_ids all inference.py --config_path $RUN_DIR --num_images $NUM_IMAGES --device cuda --cuda_device $CUDA_DEVICE"
 
+    if [[ -n "$OUT_SUBDIR" ]]; then
+        INFERENCE_CMD="$INFERENCE_CMD --out_subdir $OUT_SUBDIR"
+    fi
+
+    INFERENCE_CMD="$INFERENCE_CMD --wandb_offline"
+
     if [ "$FORCE_LOAD_WEIGHTS" = true ]; then
         INFERENCE_CMD="$INFERENCE_CMD --force_load_weights"
     fi
@@ -107,7 +108,11 @@ if [ "$MULTI_GPU" = true ]; then
     srun $PYXIS_FLAGS $INFERENCE_CMD "${EXTRA_ARGS[@]}"
 else
     echo "Launching single-node inference"
-    INFERENCE_CMD="python3 inference.py --config_path $RUN_DIR --num_images $NUM_IMAGES --device $DEVICE --cuda_device $CUDA_DEVICE --out_subdir $OUT_SUBDIR --wandb_offline"
+    INFERENCE_CMD="python3 inference.py --config_path $RUN_DIR --num_images $NUM_IMAGES --device $DEVICE --cuda_device $CUDA_DEVICE --wandb_offline"
+
+    if [[ -n "$OUT_SUBDIR" ]]; then
+        INFERENCE_CMD="$INFERENCE_CMD --out_subdir $OUT_SUBDIR"
+    fi
 
     if [ "$FORCE_LOAD_WEIGHTS" = true ]; then
         INFERENCE_CMD="$INFERENCE_CMD --force_load_weights"

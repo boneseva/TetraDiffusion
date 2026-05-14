@@ -1,8 +1,9 @@
+from pathlib import Path
 import trimesh
 import torch
 
 
-def plot_and_save_meshes(all_meshes, dataset, config, name, k):
+def plot_and_save_meshes(all_meshes, dataset, config, name, k, file_prefix=None):
     """
     Plots and saves meshes from generated samples.
 
@@ -22,10 +23,19 @@ def plot_and_save_meshes(all_meshes, dataset, config, name, k):
         else:
             mesh_verts, mesh_color, mesh_faces = dataset.get_mesh_wo_color(mesh)
 
-        save_mesh(mesh_verts, mesh_color, mesh_faces, name, k, f"stepsize_{config.diffusion.sampling_steps[i]}", config.dataset.color)
+        save_mesh(
+            mesh_verts,
+            mesh_color,
+            mesh_faces,
+            name,
+            k,
+            f"stepsize_{config.diffusion.sampling_steps[i]}",
+            config.dataset.color,
+            file_prefix=file_prefix,
+        )
 
 
-def save_mesh(mesh_verts, mesh_color, mesh_faces, name, k, i, has_color):
+def save_mesh(mesh_verts, mesh_color, mesh_faces, name, k, i, has_color, file_prefix=None):
     """
     Saves the mesh as an OBJ file.
 
@@ -43,4 +53,5 @@ def save_mesh(mesh_verts, mesh_color, mesh_faces, name, k, i, has_color):
     if has_color:
         mesh.visual.vertex_colors = mesh_color.to(torch.uint8).cpu().detach().numpy()
 
-    mesh.export(f"{name}/{k}_{i}.obj")
+    filename = f"{k}_{i}.obj" if not file_prefix else f"{file_prefix}_{k}_{i}.obj"
+    mesh.export(Path(name) / filename)
