@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # launch.sh — wrapper that submits submit_train.sh with the correct SLURM job name.
 #
-# Usage:
+# Usage (new run):
 #   bash launch.sh --category Golgi
 #   bash launch.sh --category ER --multi_gpu
 #
+# Usage (resume after timeout):
+#   bash launch.sh --category Golgi --name golgi_20260512_1423 --resume
+#   bash launch.sh --category ER    --name er_20260512_1423    --resume --multi_gpu
+#
+# --name is REQUIRED when resuming so the existing run folder (runs/<name>/) is targeted.
 # The SLURM job will be named  tetradiff_<category>  (e.g. tetradiff_Golgi).
 # All arguments are forwarded to submit_train.sh unchanged.
 

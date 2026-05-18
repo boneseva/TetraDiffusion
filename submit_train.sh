@@ -37,22 +37,34 @@ CATEGORY=""
 RUN_NAME=""
 DATA_PATH=""
 MULTI_GPU=false
+RESUME=false
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --category)   CATEGORY="$2";   shift 2 ;;
         --data_path)  DATA_PATH="$2";  shift 2 ;;
+        --name)       RUN_NAME="$2";   shift 2 ;;
         --multi_gpu)  MULTI_GPU=true;  shift   ;;
+        --resume)     RESUME=true;     shift   ;;
         *)            EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
 # ─── Defaults ─────────────────────────────────────────────────────────────────
 CATEGORY="${CATEGORY:-Golgi}"
-RUN_NAME="${CATEGORY,,}_$(date +%Y%m%d_%H%M)"     # e.g. golgi_20260512_1423
+# When resuming, --name MUST be provided so we target the existing run folder.
+if [ "$RESUME" = true ] && [ -z "$RUN_NAME" ]; then
+    echo "ERROR: --resume requires --name <run_name> so the existing checkpoint folder can be found." >&2
+    exit 1
+fi
+RUN_NAME="${RUN_NAME:-${CATEGORY,,}_$(date +%Y%m%d_%H%M)}"   # e.g. golgi_20260512_1423
 DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
 WANDB_PROJECT="TetraDiffusion"
+
+# Build optional resume flag forwarded to main.py
+RESUME_FLAG=()
+[ "$RESUME" = true ] && RESUME_FLAG=(--resume)
 
 # ─── Container / environment setup ───────────────────────────────────────────
 CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
@@ -78,6 +90,7 @@ echo "Category     : $CATEGORY"
 echo "Run name     : $RUN_NAME"
 echo "Data path    : $DATA_PATH"
 echo "Multi-GPU    : $MULTI_GPU"
+echo "Resume       : $RESUME"
 echo "Repo dir     : $REPO_DIR"
 echo "Date         : $(date)"
 echo "================================================"
@@ -99,6 +112,7 @@ if [ "$MULTI_GPU" = true ]; then
         --batch_size   4 \
         --ga           1 \
         --wandb_project "$WANDB_PROJECT" \
+        "${RESUME_FLAG[@]}" \
         "${EXTRA_ARGS[@]}"
 else
     echo "Launching single-GPU training"
@@ -110,6 +124,7 @@ else
         --batch_size   4 \
         --ga           1 \
         --wandb_project "$WANDB_PROJECT" \
+        "${RESUME_FLAG[@]}" \
         "${EXTRA_ARGS[@]}"
 fi
 
