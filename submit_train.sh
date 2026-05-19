@@ -13,10 +13,17 @@
 #   --bio_loss_type laplacian            only smoothness loss (no curvature)
 #   --bio_loss_type curvature            only bending-energy loss
 #   --bio_loss_type both                 both (default)
+#   --lr_schedule warmup_constant        linear warmup → constant  (default)
+#   --lr_schedule constant               flat LR, no warmup
+#   --lr_schedule warmup_cosine          linear warmup → cosine decay
+#   --lr_schedule cosine                 cosine decay from step 0
 #
-# Example ablation pair:
+# Example ablation pairs:
 #   sbatch submit_train.sh --category Mitochondria --name mito_with_bio
 #   sbatch submit_train.sh --category Mitochondria --name mito_no_bio --no_bio_loss
+#
+#   sbatch submit_train.sh --category Golgi --name golgi_warmup    --lr_schedule warmup_constant
+#   sbatch submit_train.sh --category Golgi --name golgi_cosine    --lr_schedule warmup_cosine
 #
 # Container runtime is auto-detected: Pyxis > Enroot > Singularity > Conda.
 # Run name is auto-generated as <category_lowercase>_<YYYYMMDD_HHMM>.

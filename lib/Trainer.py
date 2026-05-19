@@ -106,7 +106,10 @@ class Trainer(object):
             # verify the data pipeline looks correct before training starts.
             if self.accelerator.is_main_process:
                 print("[Trainer] Logging training sample point clouds to WandB …")
-                log_training_samples_to_wandb(self.ds, n_samples=4, step=0)
+                # Use the current wandb run step so step ordering is always
+                # monotonically increasing, even when resuming a run.
+                current_step = getattr(wandb.run, 'step', 0) if wandb.run else 0
+                log_training_samples_to_wandb(self.ds, n_samples=4, step=current_step)
 
         print("mixed_precision", 'fp16' if self.cfg.training.mixed_precision else 'no')
         model = UVIT(cfg, rank=self.device, ds=self.ds)
@@ -165,17 +168,60 @@ class Trainer(object):
         self.model.mask = self.ds.mask_verts
 
         optim_klass = AdamW
+        self.opt = optim_klass(self.model.parameters(), lr=train_lr, betas=adam_betas, weight_decay=1e-4)
 
-        if cfg.training.use_scheduler:
-            div_factor = cfg.training.max_lr / cfg.training.start_lr
-            final_div_factor = cfg.training.max_lr / (cfg.training.min_lr * div_factor)
-            self.opt = optim_klass(self.model.parameters(), lr=train_lr, betas=adam_betas)
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(
-                self.opt, max_lr=cfg.training.max_lr, steps_per_epoch=1,
-                epochs=cfg.training.num_steps, div_factor=div_factor,
-                final_div_factor=final_div_factor)
+        # ── LR scheduler ────────────────────────────────────────────────────
+        # Controlled by cfg.training.lr_schedule.  Four named options:
+        #   warmup_constant  ramp 0→lr over warmup_steps, then flat  (default)
+        #   constant         flat from step 0 (no warmup)
+        #   warmup_cosine    ramp 0→lr, then cosine decay to lr_min
+        #   cosine           cosine decay from step 0 (no warmup)
+        lr_schedule  = str(getattr(cfg.training, 'lr_schedule', 'warmup_constant'))
+        warmup_steps = int(getattr(cfg.training, 'warmup_steps', 2000))
+        total_steps  = cfg.training.num_steps
+        lr_min       = float(getattr(cfg.training, 'lr_min', 1e-6))
+        lr_min_ratio = lr_min / train_lr   # fraction for cosine floor
+
+        if lr_schedule == 'constant':
+            self.scheduler = None
+            print(f"[Trainer] LR schedule: constant {train_lr:.2e}")
+
+        elif lr_schedule == 'warmup_constant':
+            def _warmup_constant(step):
+                if step < warmup_steps:
+                    return float(step) / float(max(1, warmup_steps))
+                return 1.0
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.opt, _warmup_constant)
+            print(f"[Trainer] LR schedule: warmup_constant  "
+                  f"(0 → {train_lr:.2e} over {warmup_steps} steps, then flat)")
+
+        elif lr_schedule == 'warmup_cosine':
+            import math as _math
+            def _warmup_cosine(step):
+                if step < warmup_steps:
+                    return float(step) / float(max(1, warmup_steps))
+                progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+                cosine = 0.5 * (1.0 + _math.cos(_math.pi * progress))
+                return lr_min_ratio + (1.0 - lr_min_ratio) * cosine
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.opt, _warmup_cosine)
+            print(f"[Trainer] LR schedule: warmup_cosine  "
+                  f"(warmup {warmup_steps} steps, cosine → {lr_min:.2e})")
+
+        elif lr_schedule == 'cosine':
+            import math as _math
+            def _cosine(step):
+                progress = float(step) / float(max(1, total_steps))
+                cosine = 0.5 * (1.0 + _math.cos(_math.pi * progress))
+                return lr_min_ratio + (1.0 - lr_min_ratio) * cosine
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.opt, _cosine)
+            print(f"[Trainer] LR schedule: cosine  "
+                  f"({train_lr:.2e} → {lr_min:.2e} over {total_steps} steps)")
+
         else:
-            self.opt = optim_klass(self.model.parameters(), lr=train_lr, betas=adam_betas, weight_decay=1e-4)
+            raise ValueError(
+                f"Unknown lr_schedule '{lr_schedule}'. "
+                "Choose one of: warmup_constant, constant, warmup_cosine, cosine"
+            )
 
         if self.accelerator.is_main_process:
             self.ema = EMA(self.model, beta=ema_decay, update_every=ema_update_every)
@@ -202,9 +248,9 @@ class Trainer(object):
         self.results_folder = Path(results_folder)
         self.results_folder.mkdir(exist_ok=True)
 
-        if cfg.training.use_scheduler:
+        if self.scheduler is not None:
             self.model, self.opt, self.scheduler, dl = self.accelerator.prepare(
-                self.model, self.opt, scheduler, dl)
+                self.model, self.opt, self.scheduler, dl)
         else:
             self.model, self.opt, dl = self.accelerator.prepare(self.model, self.opt, dl)
         self.dl = cycle(dl)
@@ -224,6 +270,8 @@ class Trainer(object):
             'opt': self.opt.state_dict(),
             'ema': self.ema.state_dict(),
         }
+        if self.scheduler is not None:
+            data['scheduler'] = self.scheduler.state_dict()
         torch.save(data, str(self.config_folder + f'/model-{milestone}.pt'))
 
     def get_lr(self, optimizer):
@@ -251,11 +299,8 @@ class Trainer(object):
         if self.accelerator.is_main_process:
             checkpoint = data["ema"]
             self.ema.load_state_dict(checkpoint)
-        if self.cfg.training.use_scheduler:
-            self.scheduler = data["scheduler"]
-        else:
-            for g in self.opt.param_groups:
-                g['lr'] = self.cfg.training.lr
+        if self.scheduler is not None and "scheduler" in data:
+            self.scheduler.load_state_dict(data["scheduler"])
         if 'version' in data:
             print(f"loading from version {data['version']}")
         if exists(self.accelerator.scaler) and exists(data['scaler']):
@@ -291,7 +336,7 @@ class Trainer(object):
                     local_sgd.step()
                     self.accelerator.log({"training_loss": loss})
 
-                    if self.cfg.training.use_scheduler:
+                    if self.scheduler is not None:
                         self.scheduler.step()
 
                     if index % self.gradient_accumulate_every == 0:

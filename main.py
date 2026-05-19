@@ -34,6 +34,9 @@ parser.add_argument('--no_bio_loss', action='store_true',
                     help='Disable biological constraint loss (sets bio_loss_weight=0).')
 parser.add_argument('--bio_loss_type', type=str, choices=['laplacian', 'curvature', 'both'],
                     help='Which biological loss term to use (overrides config).')
+parser.add_argument('--lr_schedule', type=str,
+                    choices=['warmup_constant', 'constant', 'warmup_cosine', 'cosine'],
+                    help='LR schedule to use (overrides config). Default: warmup_constant.')
 args = parser.parse_args()
 
 if args.name is not None:
@@ -72,6 +75,9 @@ elif args.bio_loss_weight is not None:
 
 if args.bio_loss_type is not None:
     OmegaConf.update(cfg, 'diffusion.bio_loss_type', args.bio_loss_type)
+
+if args.lr_schedule is not None:
+    OmegaConf.update(cfg, 'training.lr_schedule', args.lr_schedule)
 
 
 print(cfg)

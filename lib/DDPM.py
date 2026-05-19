@@ -1,6 +1,6 @@
 import math
 from functools import wraps
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 import torch
 from torch import nn, Tensor, sqrt, einsum
 import torch.nn.functional as F
@@ -202,7 +202,7 @@ class GaussianDiffusion(nn.Module):
             shapes.append(result)
         return torch.cat(shapes, 0)
 
-    @autocast(enabled=False)
+    @autocast('cuda', enabled=False)
     def q_sample(self, x_start: Tensor, times: Tensor, noise: Tensor = None) -> Tensor:
         noise = default(noise, lambda: torch.randn_like(x_start))
         log_snr = self.log_snr(times)
