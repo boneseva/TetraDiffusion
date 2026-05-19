@@ -28,6 +28,12 @@ parser.add_argument('--num_steps', type=int, help='Total training steps (overrid
 parser.add_argument('--resume', action='store_true',
                     help='Resume training: load latest checkpoint and continue the same wandb run.')
 parser.add_argument('--wandb_project', type=str, help='Weights & Biases project name.')
+parser.add_argument('--bio_loss_weight', type=float,
+                    help='Weight for biological constraint loss (overrides config).')
+parser.add_argument('--no_bio_loss', action='store_true',
+                    help='Disable biological constraint loss (sets bio_loss_weight=0).')
+parser.add_argument('--bio_loss_type', type=str, choices=['laplacian', 'curvature', 'both'],
+                    help='Which biological loss term to use (overrides config).')
 args = parser.parse_args()
 
 if args.name is not None:
