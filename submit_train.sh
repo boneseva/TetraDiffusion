@@ -20,6 +20,7 @@
 #
 # Container runtime is auto-detected: Pyxis > Enroot > Singularity > Conda.
 # Run name is auto-generated as <category_lowercase>_<YYYYMMDD_HHMM>.
+# SLURM job name is dynamically renamed to tetradiff_<Category> at runtime.
 # WandB project is always "TetraDiffusion".
 
 # ─── SLURM directives ─────────────────────────────────────────────────────────
@@ -44,6 +45,8 @@ REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "$REPO_DIR"
 
 # ─── Parse wrapper-level flags ────────────────────────────────────────────────
+# NOTE: job name is renamed below once CATEGORY is known (scontrol cannot be
+#       called before argument parsing, and #SBATCH lines don't expand vars).
 CATEGORY=""
 RUN_NAME=""
 DATA_PATH=""
@@ -72,6 +75,12 @@ fi
 RUN_NAME="${RUN_NAME:-${CATEGORY,,}_$(date +%Y%m%d_%H%M)}"   # e.g. golgi_20260512_1423
 DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
 WANDB_PROJECT="TetraDiffusion"
+
+# ─── Rename SLURM job to include the category (not possible in #SBATCH lines) ─
+# This makes "squeue" show e.g. "tetradiff_Mitochondria" instead of "tetradiff".
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+    scontrol update JobId="${SLURM_JOB_ID}" JobName="tetradiff_${CATEGORY}" || true
+fi
 
 # Build optional resume flag forwarded to main.py
 RESUME_FLAG=()

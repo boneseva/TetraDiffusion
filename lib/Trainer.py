@@ -89,6 +89,22 @@ class Trainer(object):
                 self.ds = torch.load(ds_cache_path, weights_only=False)
                 self.ds.config = cfg
                 print("[Trainer] Cached MeshLoader loaded.")
+                # Older cached objects may be missing attributes added after caching.
+                # Re-build flip_perms if needed so augmentation works correctly.
+                if not hasattr(self.ds, 'flip_perms'):
+                    self.ds.flip_perms = None
+                if getattr(cfg.dataset, 'augment', False) and self.ds.flip_perms is None:
+                    print("[Trainer] Cached MeshLoader missing flip_perms — rebuilding …")
+                    from lib.Tetradata import _build_flip_permutation
+                    try:
+                        self.ds.flip_perms = [
+                            _build_flip_permutation(self.ds.tet_verts, axis=0),
+                            _build_flip_permutation(self.ds.tet_verts, axis=1),
+                            _build_flip_permutation(self.ds.tet_verts, axis=2),
+                        ]
+                        print("[Trainer] flip_perms rebuilt (axes X, Y, Z).")
+                    except (ImportError, RuntimeError) as e:
+                        print(f"[Trainer] WARNING: could not rebuild flip_perms — augmentation disabled. {e}")
             else:
                 print("[Trainer] Initializing MeshLoader (this may take a while if grid pruning is enabled)...")
                 self.ds = MeshLoader(config=cfg, device="cpu", cuda_device=self.device, accelerator=self.accelerator)

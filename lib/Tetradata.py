@@ -431,7 +431,7 @@ class MeshLoader(Dataset):
         # the full vertex array.  Each axis is flipped independently with
         # probability 0.5, giving 8 equally-likely orientations per sample.
         # ------------------------------------------------------------------
-        if self.flip_perms is not None:
+        if getattr(self, 'flip_perms', None) is not None:
             for axis, perm in enumerate(self.flip_perms):
                 if torch.rand(1).item() < 0.5:
                     sdf          = sdf[perm]

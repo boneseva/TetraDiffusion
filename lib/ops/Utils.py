@@ -59,7 +59,7 @@ def log_augmentation_preview_to_wandb(dataset, n_samples: int = 2, step: int = 0
         print("[aug preview] wandb not available — skipping preview.")
         return
 
-    if dataset.flip_perms is None:
+    if getattr(dataset, 'flip_perms', None) is None:
         return
 
     mask = dataset.mask  # 0 = keep
@@ -96,7 +96,7 @@ def log_augmentation_preview_to_wandb(dataset, n_samples: int = 2, step: int = 0
             print(f"[aug preview] original sample {sample_idx}: {e}")
 
         # Three axis flips
-        for axis, perm in enumerate(dataset.flip_perms):
+        for axis, perm in enumerate(getattr(dataset, 'flip_perms', [])):
             sdf_a    = sdf_r[perm]
             deform_a = deform_r[perm].clone()
             deform_a[:, axis] = -deform_a[:, axis]   # negate spatial component only
