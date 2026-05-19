@@ -13,15 +13,15 @@
 #   --device              Device to use: cuda or cpu (default: cuda)
 #   --cuda_device         GPU device index (default: 0)
 #   --out_subdir          Custom output subdirectory inside each run folder
-#   --comparison_mode     Deterministic comparison mode (default)
-#   --generation_mode     Stochastic generation mode
+#   --comparison_mode     Deterministic comparison mode
+#   --generation_mode     Stochastic generation mode (default)
 #   --multi_gpu           Use multi-GPU inference (default: single GPU)
 #   --skip_load_weights   Do NOT force load trained weights (not recommended)
 #   --list_runs           Print available inference-ready runs and exit
 #
 # IMPORTANT: By default this script submits one SLURM job per inference-ready run.
 #            Inference-ready = has config.yaml + ds.pth + at least one model-*.pt checkpoint.
-#            Default inference mode is --comparison_mode so the run logs clearly show deterministic comparison behavior.
+#            Default inference mode is --generation_mode (stochastic) for diverse sample generation.
 #            Use --run_name to restrict to a single run.
 #
 set -euo pipefail
@@ -106,7 +106,7 @@ done
 
 if [[ "$INFERENCE_MODE" == "" ]]; then
 	INFERENCE_MODE="generation"
-	PASSTHROUGH_ARGS=(--comparison_mode "${PASSTHROUGH_ARGS[@]}")
+	PASSTHROUGH_ARGS=(--generation_mode "${PASSTHROUGH_ARGS[@]}")
 elif [[ "$INFERENCE_MODE" == "comparison" ]]; then
 	PASSTHROUGH_ARGS=(--comparison_mode "${PASSTHROUGH_ARGS[@]}")
 elif [[ "$INFERENCE_MODE" == "generation" ]]; then

@@ -58,6 +58,15 @@ if args.resume:
 if args.wandb_project is not None:
     OmegaConf.update(cfg, 'wandb_project', args.wandb_project)
 
+# ── Biological constraints overrides ───────────────────────────────────────
+if args.no_bio_loss:
+    OmegaConf.update(cfg, 'diffusion.bio_loss_weight', 0.0)
+elif args.bio_loss_weight is not None:
+    OmegaConf.update(cfg, 'diffusion.bio_loss_weight', args.bio_loss_weight)
+
+if args.bio_loss_type is not None:
+    OmegaConf.update(cfg, 'diffusion.bio_loss_type', args.bio_loss_type)
+
 
 print(cfg)
 

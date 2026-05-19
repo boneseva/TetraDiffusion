@@ -7,6 +7,17 @@
 # Usage (multi GPU):
 #   sbatch --gres=gpu:2 submit_train.sh --category Golgi --multi_gpu
 #
+# Ablation flags (passed through to main.py via EXTRA_ARGS):
+#   --no_bio_loss                        baseline: no biological constraints
+#   --bio_loss_weight 0.01               override constraint weight
+#   --bio_loss_type laplacian            only smoothness loss (no curvature)
+#   --bio_loss_type curvature            only bending-energy loss
+#   --bio_loss_type both                 both (default)
+#
+# Example ablation pair:
+#   sbatch submit_train.sh --category Mitochondria --name mito_with_bio
+#   sbatch submit_train.sh --category Mitochondria --name mito_no_bio --no_bio_loss
+#
 # Container runtime is auto-detected: Pyxis > Enroot > Singularity > Conda.
 # Run name is auto-generated as <category_lowercase>_<YYYYMMDD_HHMM>.
 # WandB project is always "TetraDiffusion".

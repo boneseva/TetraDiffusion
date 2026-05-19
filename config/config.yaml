@@ -37,10 +37,18 @@ network:
 
 # Diffusion params
 diffusion:
-  offset_noise: 0.0
+  offset_noise: 0.1   # was 0.0 — offset noise helps prevent mean-collapse on small datasets
   noise_d: 32
   use_standard_noise: False
   pred_objective: "v" # "v" or "eps"
   sampling_steps: [32,32,64,64]
+
+  # Biological constraint losses (dissertation proposal section 2.2 / 3.1)
+  # Set bio_loss_weight > 0 to enable.  Start small (1e-3) and increase if
+  # generated shapes become rough or biologically implausible.
+  bio_loss_weight: 0.005        # λ — overall weight of biological constraint term
+  bio_loss_type: "both"         # "laplacian" | "curvature" | "both"
+  bio_snr_weighting: True       # scale loss by SNR(t)/(SNR(t)+1) — only penalise at low noise
+  bio_curvature_softness: 0.15  # width of surface weighting kernel exp(-|sdf|/σ)
 
 

@@ -1,5 +1,5 @@
-data_path: /scratch5/TetraDiffusion_Rebuttal/
-results_folder: "bike"
+data_path: /scratch5/TetraDiffusion_Rebuttal/  # override with --data_path
+results_folder: "runs/default"                 # override with --name
 
 # Dataset
 dataset:
@@ -9,10 +9,11 @@ dataset:
   training: True # if True use training data - else test split (for inference)
   train_split: False # train on full data (False) or on train split (True)
   grid_res: 128 # 128 or 192
-  shapenet_ids: ["03790512"]
+  shapenet_ids: ["OVERRIDE_ME"]  # override with --shapenet_id <category>
   num_samples: 1000000 # max number of used samples in the dataset - mostly used for debugging
   mask_data: True # is TSDF
   color: True
   grid_pruning: True # removes part of the data
   mask_lossy: True # for pretraining removes everything above threshold
   threshold: 0 # in case of lossy masking, threshold for a vertex being removed
+  augment: True  # on-the-fly axis-aligned reflection augmentation (8× effective dataset size, free at train time)

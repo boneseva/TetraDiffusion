@@ -10,6 +10,7 @@ import numpy as np
 from tqdm import tqdm
 from einops import rearrange, repeat, reduce
 from lib.ops.Misc import default, exists
+from lib.ops.BioConstraints import biological_constraints_loss
 
 
 # Utility functions
@@ -79,7 +80,8 @@ class GaussianDiffusion(nn.Module):
             min_snr_gamma: int = 5,
             image_size: int = 128,
             cfg=None,
-            offset_noise_strength: float = 0.1
+            offset_noise_strength: float = 0.1,
+            ds=None,                        # MeshLoader — used for biological constraints
     ):
         super().__init__()
         assert pred_objective in {'v', 'eps'}, 'Prediction objective must be either "v" or "eps".'
@@ -106,6 +108,28 @@ class GaussianDiffusion(nn.Module):
         self.clip_sample_denoised = clip_sample_denoised
         self.min_snr_loss_weight = min_snr_loss_weight
         self.min_snr_gamma = min_snr_gamma
+
+        # ------------------------------------------------------------------
+        # Biological constraint losses
+        # ------------------------------------------------------------------
+        bio_cfg = getattr(cfg, 'diffusion', None)
+        self.bio_loss_weight     = float(getattr(bio_cfg, 'bio_loss_weight', 0.0))
+        self.bio_loss_type       = str(getattr(bio_cfg, 'bio_loss_type', 'both'))
+        self.bio_curvature_softness = float(getattr(bio_cfg, 'bio_curvature_softness', 0.15))
+        self.bio_snr_weighting   = bool(getattr(bio_cfg, 'bio_snr_weighting', True))
+
+        # Store the tetrahedral-graph neighbour table (finest resolution) on CPU;
+        # it will be moved to the active device on first use.
+        self._bio_neighbors = None
+        if self.bio_loss_weight > 0.0 and ds is not None:
+            # After grid-pruning ds.neighbors[-1] is in the pruned vertex space —
+            # the same space the training data lives in.
+            self._bio_neighbors = ds.neighbors[-1].long().cpu()
+            print(
+                f"[DDPM] Biological constraints enabled: "
+                f"type={self.bio_loss_type}, weight={self.bio_loss_weight}, "
+                f"neighbor shape={self._bio_neighbors.shape}"
+            )
 
     @property
     def device(self):
@@ -209,7 +233,6 @@ class GaussianDiffusion(nn.Module):
             target = noise
 
         loss = F.mse_loss(model_out, target, reduction='none')
-
         loss = reduce(loss, 'b ... -> b', 'mean')
         snr = log_snr.exp()
 
@@ -222,7 +245,50 @@ class GaussianDiffusion(nn.Module):
         elif self.pred_objective == 'eps':
             loss_weight = maybe_clip_snr / snr
 
-        return (loss * loss_weight).mean()
+        diffusion_loss = (loss * loss_weight).mean()
+
+        # ------------------------------------------------------------------
+        # Biological constraint losses
+        # Recover predicted x_start (clean sample estimate) and apply
+        # curvature / smoothness regularisation on it.  Losses are scaled by
+        # a smooth SNR weight so they only meaningfully contribute when the
+        # model's clean-sample estimate is already roughly correct (low noise).
+        # ------------------------------------------------------------------
+        if self.bio_loss_weight > 0.0 and self._bio_neighbors is not None:
+            # Recover x_start_pred from model output without re-running the model
+            padded_log_snr = right_pad_dims_to(x, log_snr)
+            alpha_p = sqrt(padded_log_snr.sigmoid())
+            sigma_p = sqrt((-padded_log_snr).sigmoid())
+            if self.pred_objective == 'v':
+                x_start_pred = alpha_p * x - sigma_p * model_out
+            else:  # eps
+                x_start_pred = (x - sigma_p * model_out) / alpha_p
+
+            x_start_pred = x_start_pred.clamp(-1., 1.)
+
+            neighbors = self._bio_neighbors.to(x.device)
+            bio = biological_constraints_loss(
+                x_start_pred,
+                neighbors,
+                loss_type=self.bio_loss_type,
+                surface_softness=self.bio_curvature_softness,
+            )
+
+            # SNR-based weighting: w(t) = SNR/(SNR+1) → 0 at high noise, →1 at low noise
+            if self.bio_snr_weighting:
+                snr_weight = (snr / (snr + 1)).mean()
+            else:
+                snr_weight = 1.0
+
+            weighted_bio = self.bio_loss_weight * snr_weight * bio
+
+            # Expose components for external logging (Trainer reads these)
+            self._last_bio_loss     = bio.detach()
+            self._last_diffusion_loss = diffusion_loss.detach()
+
+            return diffusion_loss + weighted_bio
+
+        return diffusion_loss
 
     def forward(self, img: Tensor, *args, **kwargs) -> Tensor:
         b, h, c, device = *img.shape, img.device

@@ -8,6 +8,46 @@ from tqdm import tqdm
 import pandas as pd
 
 
+# ---------------------------------------------------------------------------
+# Tetrahedral-grid–aware axis-flip permutation helpers
+# ---------------------------------------------------------------------------
+
+def _build_flip_permutation(tet_verts: torch.Tensor, axis: int) -> torch.Tensor:
+    """
+    Return the vertex-index permutation that corresponds to a reflection along
+    ``axis`` (0=X, 1=Y, 2=Z) of the tetrahedral grid.
+
+    For each vertex v_i at position p, we find the vertex v_j whose position
+    equals reflect(p), i.e. p with the sign of component ``axis`` flipped.
+    The returned tensor ``perm`` satisfies:
+        tet_verts[perm[i]] ≈ reflect_axis(tet_verts[i])
+
+    Uses a KD-tree lookup (scipy) so it is grid-resolution independent.
+    Raises RuntimeError if any vertex does not have a mirror partner within 1e-3
+    (which would indicate a non-symmetric grid — do not use augmentation then).
+    """
+    try:
+        from scipy.spatial import KDTree
+    except ImportError as e:
+        raise ImportError("scipy is required for grid augmentation (pip install scipy)") from e
+
+    verts_np = tet_verts.cpu().float().numpy()
+    reflected = verts_np.copy()
+    reflected[:, axis] *= -1
+
+    tree = KDTree(verts_np)
+    dists, perm = tree.query(reflected, workers=-1)
+
+    max_err = float(dists.max())
+    if max_err > 1e-3:
+        raise RuntimeError(
+            f"Flip permutation for axis={axis} has max residual {max_err:.2e} > 1e-3. "
+            "The tetrahedral grid does not appear to be symmetric under this reflection. "
+            "Set dataset.augment=False to disable augmentation."
+        )
+    return torch.from_numpy(perm).long()
+
+
 def marching_cube_get_idx(sdf_n, tet_fx4):
     num_triangles_table = torch.tensor([0, 1, 1, 2, 1, 2, 2, 1, 1, 2, 2, 1, 2, 1, 1, 0], dtype=torch.long,  device=sdf_n.device)
     with torch.no_grad():
@@ -99,6 +139,24 @@ class MeshLoader(Dataset):
         self.accelerator.wait_for_everyone()
         self.tet_verts = self.tet_verts.cpu()
         torch.cuda.empty_cache()
+
+        # ------------------------------------------------------------------
+        # Precompute axis-flip vertex permutations for on-the-fly augmentation.
+        # Only built when dataset.augment=True; skipped during inference.
+        # ------------------------------------------------------------------
+        self.flip_perms: list[torch.Tensor] | None = None
+        if getattr(self.config.dataset, 'augment', False) and getattr(self.config.dataset, 'training', True):
+            print("Building flip permutations for on-the-fly augmentation …")
+            try:
+                self.flip_perms = [
+                    _build_flip_permutation(self.tet_verts, axis=0),  # flip X
+                    _build_flip_permutation(self.tet_verts, axis=1),  # flip Y
+                    _build_flip_permutation(self.tet_verts, axis=2),  # flip Z
+                ]
+                print("  flip permutations built (axes X, Y, Z).")
+            except (ImportError, RuntimeError) as e:
+                print(f"  WARNING: could not build flip permutations — augmentation disabled. Reason: {e}")
+                self.flip_perms = None
 
     def mask_sdfs_or_disps_it(self, sdf, displacement, color):
 
@@ -366,6 +424,22 @@ class MeshLoader(Dataset):
             sample = torch.load(self.paths_test[idx], map_location='cpu', weights_only=False)
 
         sdf, displacements, colors = sample[0], sample[1], sample[2]
+
+        # ------------------------------------------------------------------
+        # On-the-fly augmentation: random axis-aligned reflections.
+        # Applied BEFORE masking so the permutation indices are valid over
+        # the full vertex array.  Each axis is flipped independently with
+        # probability 0.5, giving 8 equally-likely orientations per sample.
+        # ------------------------------------------------------------------
+        if self.flip_perms is not None:
+            for axis, perm in enumerate(self.flip_perms):
+                if torch.rand(1).item() < 0.5:
+                    sdf          = sdf[perm]
+                    displacements = displacements[perm]
+                    # Negate the displacement component along the reflected axis
+                    displacements = displacements.clone()
+                    displacements[:, axis] = -displacements[:, axis]
+                    colors       = colors[perm]
 
         sdf = sdf[self.mask == 0]
         displacements = displacements[self.mask == 0, :]

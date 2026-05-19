@@ -3,8 +3,8 @@
 #
 # Usage:
 #   sbatch submit_inference.sh
+#   sbatch submit_inference.sh --run_name er_20260513_0727 --generation_mode --num_images 8  (default)
 #   sbatch submit_inference.sh --run_name er_20260513_0727 --comparison_mode --num_images 8
-#   sbatch submit_inference.sh --run_name er_20260513_0727 --generation_mode --num_images 8
 #   sbatch submit_inference.sh --list_runs
 #
 # Container runtime is auto-detected the same way as submit_train.sh.
@@ -110,8 +110,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$INFERENCE_MODE" == "" ]]; then
-    INFERENCE_MODE="comparison"
-    EXTRA_ARGS=(--comparison_mode "${EXTRA_ARGS[@]}")
+    INFERENCE_MODE="generation"
+    EXTRA_ARGS=(--generation_mode "${EXTRA_ARGS[@]}")
 elif [[ "$INFERENCE_MODE" == "comparison" ]]; then
     EXTRA_ARGS=(--comparison_mode "${EXTRA_ARGS[@]}")
 elif [[ "$INFERENCE_MODE" == "generation" ]]; then

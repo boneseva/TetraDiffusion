@@ -11,7 +11,7 @@ import numpy as np
 from glob import glob
 from omegaconf import OmegaConf
 from lib.ops.Misc import *
-from lib.ops.Utils import plot_and_save_meshes
+from lib.ops.Utils import plot_and_save_meshes, log_augmentation_preview_to_wandb
 from lib.DDPM import GaussianDiffusion
 from lib.Tetradata import MeshLoader
 from lib.UVIT import UVIT
@@ -102,6 +102,12 @@ class Trainer(object):
             # Also save to run folder (required for inference)
             torch.save(self.ds, config_folder + "/ds.pth")
 
+            # Log augmentation preview to WandB so you can verify the
+            # flipped shapes look geometrically correct before training starts.
+            if getattr(cfg.dataset, 'augment', False) and self.accelerator.is_main_process:
+                print("[Trainer] Logging augmentation preview to WandB …")
+                log_augmentation_preview_to_wandb(self.ds, n_samples=2, step=0)
+
         print("mixed_precision", 'fp16' if self.cfg.training.mixed_precision else 'no')
         model = UVIT(cfg, rank=self.device, ds=self.ds)
         print("[Trainer] UVIT model created.")
@@ -139,7 +145,8 @@ class Trainer(object):
             cfg=self.cfg,
             pred_objective=self.cfg.diffusion.pred_objective,
             num_sample_steps=self.cfg.diffusion.sampling_steps,
-            offset_noise_strength=self.cfg.diffusion.offset_noise
+            offset_noise_strength=self.cfg.diffusion.offset_noise,
+            ds=self.ds,
         )
         self.model = diffusion
         self.diffusion = diffusion
@@ -312,6 +319,11 @@ class Trainer(object):
                             }
                             if grad_norm is not None:
                                 log_dict["grad_norm"] = grad_norm
+                            # Log bio-constraint sub-losses if active
+                            raw_model = accelerator.unwrap_model(self.model)
+                            if hasattr(raw_model, '_last_bio_loss'):
+                                log_dict["bio_loss"] = raw_model._last_bio_loss.item()
+                                log_dict["diffusion_loss"] = raw_model._last_diffusion_loss.item()
                             wandb.log(log_dict, step=self.step)
 
                         pbar.set_description(
@@ -335,9 +347,19 @@ class Trainer(object):
                                         lambda n: self.ema.ema_model.sample(batch_size=n), batches))
                                 all_images = torch.cat(all_images_list, dim=0)
                                 try:
-                                    plot_and_save_meshes(
+                                    saved_paths = plot_and_save_meshes(
                                         all_images, self.ds, self.cfg,
                                         self.results_folder, milestone)
+                                    # Log generated meshes to WandB as 3D objects
+                                    mesh_panels = {}
+                                    for p in saved_paths:
+                                        key = f"generated/{p.stem}"
+                                        try:
+                                            mesh_panels[key] = wandb.Object3D(open(str(p)))
+                                        except Exception:
+                                            pass
+                                    if mesh_panels:
+                                        wandb.log(mesh_panels, step=self.step)
                                 except Exception as e:
                                     print(f"could not generate mesh: {e}")
                                 self.save(milestone % 2)
