@@ -11,7 +11,7 @@ import numpy as np
 from glob import glob
 from omegaconf import OmegaConf
 from lib.ops.Misc import *
-from lib.ops.Utils import plot_and_save_meshes, log_augmentation_preview_to_wandb
+from lib.ops.Utils import plot_and_save_meshes, log_training_samples_to_wandb, meshes_to_wandb_point_clouds
 from lib.DDPM import GaussianDiffusion
 from lib.Tetradata import MeshLoader
 from lib.UVIT import UVIT
@@ -89,22 +89,6 @@ class Trainer(object):
                 self.ds = torch.load(ds_cache_path, weights_only=False)
                 self.ds.config = cfg
                 print("[Trainer] Cached MeshLoader loaded.")
-                # Older cached objects may be missing attributes added after caching.
-                # Re-build flip_perms if needed so augmentation works correctly.
-                if not hasattr(self.ds, 'flip_perms'):
-                    self.ds.flip_perms = None
-                if getattr(cfg.dataset, 'augment', False) and self.ds.flip_perms is None:
-                    print("[Trainer] Cached MeshLoader missing flip_perms — rebuilding …")
-                    from lib.Tetradata import _build_flip_permutation
-                    try:
-                        self.ds.flip_perms = [
-                            _build_flip_permutation(self.ds.tet_verts, axis=0),
-                            _build_flip_permutation(self.ds.tet_verts, axis=1),
-                            _build_flip_permutation(self.ds.tet_verts, axis=2),
-                        ]
-                        print("[Trainer] flip_perms rebuilt (axes X, Y, Z).")
-                    except (ImportError, RuntimeError) as e:
-                        print(f"[Trainer] WARNING: could not rebuild flip_perms — augmentation disabled. {e}")
             else:
                 print("[Trainer] Initializing MeshLoader (this may take a while if grid pruning is enabled)...")
                 self.ds = MeshLoader(config=cfg, device="cpu", cuda_device=self.device, accelerator=self.accelerator)
@@ -118,11 +102,11 @@ class Trainer(object):
             # Also save to run folder (required for inference)
             torch.save(self.ds, config_folder + "/ds.pth")
 
-            # Log augmentation preview to WandB so you can verify the
-            # flipped shapes look geometrically correct before training starts.
-            if getattr(cfg.dataset, 'augment', False) and self.accelerator.is_main_process:
-                print("[Trainer] Logging augmentation preview to WandB …")
-                log_augmentation_preview_to_wandb(self.ds, n_samples=2, step=0)
+            # Log a few real training samples as point clouds so you can
+            # verify the data pipeline looks correct before training starts.
+            if self.accelerator.is_main_process:
+                print("[Trainer] Logging training sample point clouds to WandB …")
+                log_training_samples_to_wandb(self.ds, n_samples=4, step=0)
 
         print("mixed_precision", 'fp16' if self.cfg.training.mixed_precision else 'no')
         model = UVIT(cfg, rank=self.device, ds=self.ds)
@@ -366,16 +350,13 @@ class Trainer(object):
                                     saved_paths = plot_and_save_meshes(
                                         all_images, self.ds, self.cfg,
                                         self.results_folder, milestone)
-                                    # Log generated meshes to WandB as 3D objects
-                                    mesh_panels = {}
-                                    for p in saved_paths:
-                                        key = f"generated/{p.stem}"
-                                        try:
-                                            mesh_panels[key] = wandb.Object3D(open(str(p)))
-                                        except Exception:
-                                            pass
-                                    if mesh_panels:
-                                        wandb.log(mesh_panels, step=self.step)
+                                    # Log generated shapes as point clouds in WandB
+                                    pc_panels = meshes_to_wandb_point_clouds(
+                                        all_images, self.ds, self.cfg,
+                                        prefix="generated",
+                                    )
+                                    if pc_panels:
+                                        wandb.log(pc_panels, step=self.step)
                                 except Exception as e:
                                     print(f"could not generate mesh: {e}")
                                 self.save(milestone % 2)

@@ -16,4 +16,3 @@ dataset:
   grid_pruning: True # removes part of the data
   mask_lossy: True # for pretraining removes everything above threshold
   threshold: 0 # in case of lossy masking, threshold for a vertex being removed
-  augment: True  # on-the-fly axis-aligned reflection augmentation (8× effective dataset size, free at train time)
