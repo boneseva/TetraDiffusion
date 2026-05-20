@@ -51,6 +51,14 @@ parser.add_argument('--out_dir', type=str, default=None, help='Explicit output d
 parser.add_argument('--comparison_mode', action='store_true', help='Use deterministic comparison mode: shared initial noise and deterministic reverse sampling')
 parser.add_argument('--generation_mode', action='store_true', help='Use stochastic generation mode: shared initial noise but stochastic reverse sampling')
 parser.add_argument('--stochastic_sampling', action='store_true', help='Use stochastic reverse sampling instead of deterministic comparison mode')
+parser.add_argument('--image_path', type=str, default=None,
+                    help='Path to a 2D conditioning image (PNG/TIF/NPY). '
+                         'Only used when the model was trained with image_cond.enabled=True. '
+                         'If omitted the null embedding is used (unconditional).')
+parser.add_argument('--cfg_scale', type=float, default=None,
+                    help='Classifier-free guidance scale (overrides config). '
+                         '1.0 = no guidance, 3–7 = moderate, 10+ = strong. '
+                         'Only meaningful when --image_path is provided.')
 args = parser.parse_args()
 
 
@@ -103,6 +111,47 @@ effective_sampling_steps = list(getattr(getattr(cfg, 'diffusion', None), 'sampli
 # Allow overriding config.load_weights from CLI
 if args.force_load_weights:
     cfg.load_weights = True
+
+# Override CFG guidance scale from CLI if provided
+if args.cfg_scale is not None:
+    if not OmegaConf.select(cfg, 'image_cond'):
+        OmegaConf.update(cfg, 'image_cond', {})
+    OmegaConf.update(cfg, 'image_cond.cfg_guidance_scale', args.cfg_scale)
+
+
+def _load_conditioning_image(image_path: str, device) -> torch.Tensor | None:
+    """
+    Load a 2D conditioning image from disk and return a (1, 1, H, W) float32
+    tensor on the given device, normalised to [0, 1].
+
+    Supports: PNG / JPG / BMP (via PIL), TIF/TIFF (via PIL), .npy/.npz arrays.
+    Grayscale and RGB images are both accepted; RGB is averaged to grayscale.
+    """
+    if image_path is None:
+        return None
+    import pathlib
+    path = pathlib.Path(image_path)
+    ext = path.suffix.lower()
+    if ext in ('.npy',):
+        arr = np.load(str(path)).astype(np.float32)
+    elif ext in ('.npz',):
+        d = np.load(str(path))
+        arr = d[list(d.keys())[0]].astype(np.float32)
+    else:
+        from PIL import Image as PILImage
+        pil = PILImage.open(str(path))
+        arr = np.array(pil).astype(np.float32)
+
+    # Normalise to [0, 1]
+    arr = arr - arr.min()
+    if arr.max() > 0:
+        arr = arr / arr.max()
+
+    # Ensure shape is (H, W) → (1, 1, H, W)
+    if arr.ndim == 3:         # (H, W, C) RGB → grayscale
+        arr = arr.mean(axis=2)
+    tensor = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).float()  # (1, 1, H, W)
+    return tensor.to(device)
 
 
 def _sanitize_name_component(value, fallback="sample"):
@@ -182,29 +231,29 @@ trainer = Trainer(
 )
 
 
-def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
+def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda",
+                    cond_image=None):
     """
-    Generates images using the trainer model and saves them as mesh objects.
+    Generates meshes using the trainer model and saves them as OBJ files.
 
     Args:
-        trainer (Trainer): Trainer object containing the model, dataset, and configuration.
-        num_images (int): Number of images to generate. Default is 1000.
-        batch_size (int): Batch size for image generation. Default is 1.
-        device_type (str): Device type for torch.autocast. Default is "cuda".
+        trainer:     Trainer object.
+        num_images:  Number of meshes to generate.
+        batch_size:  Batch size per sampling call.
+        device_type: 'cuda' or 'cpu' (for autocast).
+        cond_image:  Optional (1, 1, H, W) conditioning image tensor.
+                     Pass None for unconditional generation.
     """
     acc = trainer.accelerator
 
-    # Only run generation on the main process — avoid calling sampling on DDP wrapper
     if not acc.is_main_process:
         print("Not main process: skipping mesh generation on this rank.")
         return
 
-    # Prefer EMA model if available on main process
     sampling_model = None
     if hasattr(trainer, 'ema') and getattr(trainer.ema, 'ema_model', None) is not None:
         sampling_model = trainer.ema.ema_model
     else:
-        # Unwrap any accelerator/DDP wrappers to get the underlying model with sample()
         if hasattr(acc, 'unwrap_model'):
             sampling_model = acc.unwrap_model(trainer.model)
         else:
@@ -215,15 +264,23 @@ def generate_meshes(trainer, num_images=1000, batch_size=1, device_type="cuda"):
 
     for k in tqdm(range(num_images), desc="Generating meshes"):
         with torch.inference_mode():
-            # Use autocast only for CUDA; CPU autocast may not be available/desired
             if device_type == 'cuda':
                 with torch.autocast(device_type=device_type):
-                    all_images_list = list(sampling_model.sample(batch_size=batch_size, deterministic=deterministic_sampling))
+                    all_images_list = list(sampling_model.sample(
+                        batch_size=batch_size,
+                        deterministic=deterministic_sampling,
+                        image=cond_image,
+                    ))
             else:
-                all_images_list = list(sampling_model.sample(batch_size=batch_size, deterministic=deterministic_sampling))
+                all_images_list = list(sampling_model.sample(
+                    batch_size=batch_size,
+                    deterministic=deterministic_sampling,
+                    image=cond_image,
+                ))
 
             all_images = torch.stack(all_images_list, dim=0)
-            plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, output_dir, k, file_prefix=organelle_prefix)
+            plot_and_save_meshes(all_images, trainer.ds, trainer.cfg, output_dir, k,
+                                 file_prefix=organelle_prefix)
 
 
 # Generate images
@@ -244,13 +301,19 @@ print(f"[inference] comparison sampling_steps: {effective_sampling_steps}")
 print(f"[inference] inference mode: {inference_mode}")
 print(f"[inference] deterministic reverse sampling: {deterministic_sampling}")
 
+# Load conditioning image (only meaningful for image-conditioned models)
+cond_image = _load_conditioning_image(args.image_path, device=trainer.accelerator.device)
+if cond_image is not None:
+    guidance = getattr(getattr(cfg, 'image_cond', None), 'cfg_guidance_scale', 1.0)
+    print(f"[inference] conditioning image: {args.image_path}  (CFG scale={guidance})")
+else:
+    if getattr(getattr(cfg, 'image_cond', None), 'enabled', False):
+        print("[inference] image_cond enabled but no --image_path given → null embedding (unconditional).")
+
 manifest = _build_inference_manifest(
-    cfg,
-    args,
-    output_dir,
-    original_sampling_steps,
-    effective_sampling_steps,
+    cfg, args, output_dir, original_sampling_steps, effective_sampling_steps,
 )
 _write_inference_manifest(output_dir, manifest)
 
-generate_meshes(trainer, num_images=args.num_images, device_type=device_type)
+generate_meshes(trainer, num_images=args.num_images, device_type=device_type,
+                cond_image=cond_image)

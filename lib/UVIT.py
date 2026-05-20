@@ -279,7 +279,7 @@ class UVIT(nn.Module):
             act_cfg="None",
             neighbor_indices=self.neighbors[-down],vertices=self.vertices[-down]))
 
-    def forward(self, x, time):
+    def forward(self, x, time, image=None, image_drop_mask=None):
         use_reentrant = True
         # Ensure gradients are tracked
         x.requires_grad = True
@@ -289,6 +289,24 @@ class UVIT(nn.Module):
 
         # Process the input time
         t = checkpoint.checkpoint(self.time_mlp, time, use_reentrant=use_reentrant)
+
+        # Optional image conditioning: add image embedding to time embedding.
+        # image_drop_mask is a bool tensor (B,): True = use null embedding for
+        # that sample (classifier-free guidance dropout during training).
+        if self.use_image_cond:
+            if image is not None:
+                img_emb = self.image_encoder(image)   # (B, time_dim)
+                if image_drop_mask is not None:
+                    null = self.null_image_emb.unsqueeze(0).expand_as(img_emb)
+                    img_emb = torch.where(
+                        image_drop_mask.view(-1, 1).to(img_emb.device),
+                        null, img_emb,
+                    )
+            else:
+                # Pure unconditional pass (e.g. CFG second pass at inference)
+                img_emb = self.null_image_emb.unsqueeze(0).expand(bs, -1)
+            t = t + img_emb
+
         t = t.unsqueeze(1)
 
         # Add coordinates if necessary

@@ -57,3 +57,16 @@ diffusion:
   bio_curvature_softness: 0.15  # width of surface weighting kernel exp(-|sdf|/σ)
 
 
+# 2-D image conditioning  (see IMAGE_CONDITIONING.md for full details)
+# Set enabled: True to train a model that can be conditioned on 2D images.
+# All unconditional code paths are completely unchanged when enabled: False.
+image_cond:
+  enabled: False          # master switch — False = zero code-path change, fully backward compatible
+  proj_size: 64           # side length (pixels) of the projection image generated during training
+  in_channels: 1          # 1 = grayscale (projection / EM slice), 3 = RGB
+  encoder: cnn            # image encoder architecture: currently only 'cnn' (SmallCNNEncoder)
+  base_channels: 32       # CNN base width; doubles per block  (32 → 64 → 128)
+  cfg_dropout_prob: 0.1   # fraction of training steps where image is dropped → null embedding (CFG)
+  cfg_guidance_scale: 1.0 # inference guidance scale: 1.0 = no CFG, 3–7 = moderate, 10 = strong
+
+

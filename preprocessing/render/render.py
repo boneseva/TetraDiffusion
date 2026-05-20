@@ -154,6 +154,10 @@ def render_layer(
         raise ValueError("render_layer: mesh.v_pos is None")
     if getattr(mesh, 't_pos_idx', None) is None:
         raise ValueError(f"render_layer: mesh.t_pos_idx is None for mesh with v_pos.shape={tuple(mesh.v_pos.shape) if mesh.v_pos is not None else None}")
+    # Auto-compute vertex normals if missing (e.g. OBJ files with no vn lines)
+    if getattr(mesh, 'v_nrm', None) is None or getattr(mesh, 't_nrm_idx', None) is None:
+        from . import mesh as mesh_module
+        mesh = mesh_module.auto_normals(mesh)
     ################################################################################
     # Interpolate attributes
     ################################################################################
@@ -392,7 +396,8 @@ def custom_render_mesh(
             # Additional layers
             mask, _ = interpolate(torch.ones_like(mesh.v_pos[None, ...], device=mesh.v_pos.device), rast, mesh.t_pos_idx.int())
             depth = (gb_pos - view_pos).pow(2).sum(dim=-1, keepdim=True).sqrt()
-            depth = (depth - depth.min()) / (depth.max() - depth.min())
+            depth_range = depth.max() - depth.min()
+            depth = (depth - depth.min()) / (depth_range + 1e-8)
             # Return multiple buffers
             buffers = {
                 'shaded': torch.cat((gb_color, torch.ones_like(gb_color[..., 0:1])), dim=-1),

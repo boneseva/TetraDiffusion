@@ -34,9 +34,17 @@ parser.add_argument('--no_bio_loss', action='store_true',
                     help='Disable biological constraint loss (sets bio_loss_weight=0).')
 parser.add_argument('--bio_loss_type', type=str, choices=['laplacian', 'curvature', 'both'],
                     help='Which biological loss term to use (overrides config).')
+parser.add_argument('--no_snr_weighting', action='store_true',
+                    help='Disable SNR-based weighting of bio loss (applies it uniformly across all noise levels).')
 parser.add_argument('--lr_schedule', type=str,
                     choices=['warmup_constant', 'constant', 'warmup_cosine', 'cosine'],
                     help='LR schedule to use (overrides config). Default: warmup_constant.')
+parser.add_argument('--image_cond', action='store_true',
+                    help='Enable 2D image conditioning (sets image_cond.enabled=True). '
+                         'Requires a fresh training run — incompatible with unconditional checkpoints '
+                         'unless fine-tuning with strict=False (image encoder starts random).')
+parser.add_argument('--cfg_scale', type=float, default=None,
+                    help='CFG guidance scale for image-conditioned inference (overrides config).')
 args = parser.parse_args()
 
 if args.name is not None:
@@ -76,8 +84,17 @@ elif args.bio_loss_weight is not None:
 if args.bio_loss_type is not None:
     OmegaConf.update(cfg, 'diffusion.bio_loss_type', args.bio_loss_type)
 
+if args.no_snr_weighting:
+    OmegaConf.update(cfg, 'diffusion.bio_snr_weighting', False)
+
 if args.lr_schedule is not None:
     OmegaConf.update(cfg, 'training.lr_schedule', args.lr_schedule)
+
+if args.image_cond:
+    OmegaConf.update(cfg, 'image_cond.enabled', True)
+
+if args.cfg_scale is not None:
+    OmegaConf.update(cfg, 'image_cond.cfg_guidance_scale', args.cfg_scale)
 
 
 print(cfg)

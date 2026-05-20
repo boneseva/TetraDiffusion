@@ -319,7 +319,13 @@ class Trainer(object):
                 for index, data in enumerate(self.dl):
                     with accelerator.accumulate(self.model):
                         with self.accelerator.autocast():
-                            loss = self.model(data)
+                            # Unpack (mesh_data, image) when image conditioning
+                            # is enabled; fall back to unconditional otherwise.
+                            if isinstance(data, (list, tuple)):
+                                mesh_data, cond_image = data[0], data[1]
+                            else:
+                                mesh_data, cond_image = data, None
+                            loss = self.model(mesh_data, image=cond_image)
                             losses.append(loss.item())
                         self.accelerator.backward(loss)
 

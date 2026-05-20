@@ -49,7 +49,11 @@ class DatasetMesh(Dataset):
         # Load environment map texture
         print("Loading light")
         self.envlight = light.load_env(FLAGS.envmap, scale=FLAGS.env_scale)
-        print("Computing tangents")
+        print("Computing normals / tangents")
+        # Organelle OBJs from segmentation have no vn lines, so v_nrm is None.
+        # auto_normals must be called before render_layer tries mesh.v_nrm[None, ...].
+        if ref_mesh.v_nrm is None:
+            ref_mesh = mesh.auto_normals(ref_mesh)
         self.ref_mesh = mesh.compute_tangents(ref_mesh) if ref_mesh.v_tex is not None else ref_mesh
         print("Done with ref mesh")
 

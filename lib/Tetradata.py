@@ -102,6 +102,64 @@ class MeshLoader(Dataset):
         self.tet_verts = self.tet_verts.cpu()
         torch.cuda.empty_cache()
 
+        # ------------------------------------------------------------------
+        # Optional: precompute projection grid indices for image conditioning.
+        # Indices are fixed (same tetrahedral grid for all samples); SDF values
+        # vary per sample — that's what makes each projection unique.
+        # ------------------------------------------------------------------
+        self.use_image_cond = bool(
+            getattr(getattr(self.config, 'image_cond', None), 'enabled', False)
+        )
+        if self.use_image_cond:
+            self._proj_grid_size = int(
+                getattr(self.config.image_cond, 'proj_size', 64)
+            )
+            self._precompute_projection_indices()
+            print(f"[MeshLoader] Image projection enabled  "
+                  f"(grid {self._proj_grid_size}×{self._proj_grid_size})")
+
+
+    def _precompute_projection_indices(self):
+        """
+        Precompute X and Y pixel indices for projecting tetrahedral vertex
+        positions onto a 2D grid.  Called once at init; result is reused in
+        every __getitem__ call.  The vertex positions are fixed across
+        all samples; only the SDF values (interior/exterior) vary.
+        """
+        gs = self._proj_grid_size
+        verts = self.tet_verts[self.mask == 0].float()  # (N_kept, 3)
+        xs, ys = verts[:, 0], verts[:, 1]
+        self._proj_xi = ((xs - xs.min()) / (xs.max() - xs.min() + 1e-6) * (gs - 1)).long().clamp(0, gs - 1)
+        self._proj_yi = ((ys - ys.min()) / (ys.max() - ys.min() + 1e-6) * (gs - 1)).long().clamp(0, gs - 1)
+
+    def _generate_projection(self, sdf_masked: torch.Tensor) -> torch.Tensor:
+        """
+        Generate a top-down (Z-axis) binary projection of the organelle.
+
+        Each pixel accumulates the number of *interior* vertices (SDF < 0)
+        that project onto it; the result is normalised to [0, 1] and returned
+        as a (1, proj_size, proj_size) float32 tensor.
+
+        This image is used as the 2D conditioning signal during training and
+        can be replaced by a real EM microscopy image at inference time.
+
+        Args:
+            sdf_masked: SDF values for the masked (kept) vertices, shape (N,).
+        """
+        if not hasattr(self, '_proj_xi'):
+            self._precompute_projection_indices()
+
+        gs = self._proj_grid_size
+        interior = (sdf_masked < 0).float()   # (N,)  1 = inside organelle
+
+        img = torch.zeros(gs, gs, dtype=torch.float32)
+        img.index_put_((self._proj_yi, self._proj_xi), interior, accumulate=True)
+
+        max_val = img.max()
+        if max_val > 0:
+            img = img / max_val
+
+        return img.unsqueeze(0)   # (1, H, W)
 
     def mask_sdfs_or_disps_it(self, sdf, displacement, color):
 
@@ -247,9 +305,12 @@ class MeshLoader(Dataset):
             name = file_list[i]
             model_id = name.split('/')[-3]
 
-            assert model_id in self.splits['modelId'].values
+            # The CSV-based train/test split is only used for ShapeNet categories
+            # that appear in lib/all.csv.  For organelle data the IDs won't be in
+            # the CSV, so we skip the assertion and the split filter in that case.
+            in_csv = model_id in self.splits['modelId'].values
 
-            if self.config.dataset.train_split:
+            if self.config.dataset.train_split and in_csv:
                 model_split = self.splits.loc[self.splits['modelId'] == model_id]['split'].values[0]
                 if model_split != "train":
                     continue
@@ -378,7 +439,15 @@ class MeshLoader(Dataset):
         sdf, displacements, colors = self._normalize(sdf, displacements, colors)
         data = torch.cat([sdf.unsqueeze(-1), displacements, colors], -1)
 
-        if self.config.dataset.color:
-            return data[:, :]
-        else:
-            return data[:, :4]
+        if not self.config.dataset.color:
+            data = data[:, :4]
+
+        # When image conditioning is enabled, generate a 2D projection of the
+        # organelle and return it alongside the 3D data.  The Trainer unpacks
+        # the tuple; when disabled only the data tensor is returned so the
+        # existing unconditional training path is completely unchanged.
+        if getattr(self, 'use_image_cond', False):
+            image = self._generate_projection(sdf)  # (1, H, W)
+            return data, image
+
+        return data

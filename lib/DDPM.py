@@ -110,6 +110,17 @@ class GaussianDiffusion(nn.Module):
         self.min_snr_gamma = min_snr_gamma
 
         # ------------------------------------------------------------------
+        # Optional image conditioning config (mirrors UVIT)
+        # ------------------------------------------------------------------
+        img_cond_cfg = getattr(cfg, 'image_cond', None)
+        self.use_image_cond = (
+            img_cond_cfg is not None
+            and bool(getattr(img_cond_cfg, 'enabled', False))
+        )
+        self.cfg_dropout_prob   = float(getattr(img_cond_cfg, 'cfg_dropout_prob',   0.1))  if self.use_image_cond else 0.0
+        self.cfg_guidance_scale = float(getattr(img_cond_cfg, 'cfg_guidance_scale', 1.0))  if self.use_image_cond else 1.0
+
+        # ------------------------------------------------------------------
         # Biological constraint losses
         # ------------------------------------------------------------------
         bio_cfg = getattr(cfg, 'diffusion', None)
@@ -135,7 +146,7 @@ class GaussianDiffusion(nn.Module):
     def device(self):
         return next(self.model.parameters()).device
 
-    def p_mean_variance(self, x: Tensor, time: Tensor, time_next: Tensor):
+    def p_mean_variance(self, x: Tensor, time: Tensor, time_next: Tensor, image: Tensor = None):
         log_snr = self.log_snr(time)
         log_snr_next = self.log_snr(time_next)
         c = -expm1(log_snr - log_snr_next)
@@ -146,7 +157,14 @@ class GaussianDiffusion(nn.Module):
         alpha, sigma, alpha_next = map(sqrt, (squared_alpha, squared_sigma, squared_alpha_next))
 
         batch_log_snr = repeat(log_snr, ' -> b', b=x.shape[0])
-        pred = self.model(x, batch_log_snr)
+        pred = self.model(x, batch_log_snr, image=image)
+
+        # Classifier-free guidance: run a second unconditional pass and
+        # interpolate.  Only active when guidance_scale > 1 and an image
+        # was actually provided.
+        if self.cfg_guidance_scale > 1.0 and image is not None:
+            pred_uncond = self.model(x, batch_log_snr, image=None)
+            pred = pred_uncond + self.cfg_guidance_scale * (pred - pred_uncond)
 
         if self.pred_objective == 'v':
             x_start = alpha * x - sigma * pred
@@ -162,15 +180,15 @@ class GaussianDiffusion(nn.Module):
         return model_mean, posterior_variance
 
     @torch.no_grad()
-    def p_sample(self, x: Tensor, time: Tensor, time_next: Tensor, deterministic: bool = False) -> Tensor:
-        model_mean, model_variance = self.p_mean_variance(x=x, time=time, time_next=time_next)
+    def p_sample(self, x: Tensor, time: Tensor, time_next: Tensor, deterministic: bool = False, image: Tensor = None) -> Tensor:
+        model_mean, model_variance = self.p_mean_variance(x=x, time=time, time_next=time_next, image=image)
         if time_next == 0 or deterministic:
             return model_mean
         noise = torch.randn_like(x)
         return model_mean + sqrt(model_variance) * noise
 
     @torch.no_grad()
-    def p_sample_loop(self, shape: tuple, initial_noise: Tensor = None, deterministic: bool = False) -> Tensor:
+    def p_sample_loop(self, shape: tuple, initial_noise: Tensor = None, deterministic: bool = False, image: Tensor = None) -> Tensor:
         if initial_noise is None:
             img = torch.randn(shape, device=self.device)
         else:
@@ -180,7 +198,7 @@ class GaussianDiffusion(nn.Module):
         for i in tqdm(range(self.num_sample_steps), desc='sampling loop time step', total=self.num_sample_steps):
             times = steps[i]
             times_next = steps[i + 1]
-            img = self.p_sample(img, times, times_next, deterministic=deterministic)
+            img = self.p_sample(img, times, times_next, deterministic=deterministic, image=image)
 
         img.clamp_(-1., 1.)
         img = unnormalize_to_zero_to_one(img)
@@ -188,16 +206,20 @@ class GaussianDiffusion(nn.Module):
         return img
 
     @torch.no_grad()
-    def sample(self, batch_size: int = 16, deterministic: bool = False) -> Tensor:
+    def sample(self, batch_size: int = 16, deterministic: bool = False, image: Tensor = None) -> Tensor:
         num_sample_steps = self.cfg.diffusion.sampling_steps
         shapes = []
         base_noise = torch.randn((batch_size, self.num_verts, self.channels), device=self.device)
+        # If a conditioning image is given but batch size differs, tile it.
+        if image is not None and image.shape[0] != batch_size:
+            image = image[:1].expand(batch_size, *image.shape[1:])
         for nss in num_sample_steps:
             self.num_sample_steps = nss
             result = self.p_sample_loop(
                 (batch_size, self.num_verts, self.channels),
                 initial_noise=base_noise,
                 deterministic=deterministic,
+                image=image,
             )
             shapes.append(result)
         return torch.cat(shapes, 0)
@@ -214,7 +236,7 @@ class GaussianDiffusion(nn.Module):
 
 
     def p_losses(self, x_start: Tensor, times: Tensor, noise: Tensor = None,
-                 offset_noise_strength: float = None) -> Tensor:
+                 offset_noise_strength: float = None, image: Tensor = None) -> Tensor:
         noise = default(noise, lambda: torch.randn_like(x_start))
         offset_noise_strength = default(offset_noise_strength, self.offset_noise_strength)
 
@@ -223,7 +245,14 @@ class GaussianDiffusion(nn.Module):
             noise += offset_noise_strength * offset_noise.unsqueeze(1)
 
         x, log_snr = self.q_sample(x_start=x_start, times=times, noise=noise)
-        model_out = self.model(x, log_snr)
+
+        # Classifier-free guidance: per-sample dropout of image conditioning.
+        # Dropped samples use the null_image_emb inside UVIT.
+        drop_mask = None
+        if self.use_image_cond and image is not None and self.cfg_dropout_prob > 0.0:
+            drop_mask = torch.rand(x.shape[0], device=x.device) < self.cfg_dropout_prob
+
+        model_out = self.model(x, log_snr, image=image, image_drop_mask=drop_mask)
 
         if self.pred_objective == 'v':
             padded_log_snr = right_pad_dims_to(x, log_snr)
@@ -290,11 +319,10 @@ class GaussianDiffusion(nn.Module):
 
         return diffusion_loss
 
-    def forward(self, img: Tensor, *args, **kwargs) -> Tensor:
+    def forward(self, img: Tensor, image: Tensor = None, *args, **kwargs) -> Tensor:
         b, h, c, device = *img.shape, img.device
-
 
         img = normalize_to_neg_one_to_one(img)
 
         times = torch.zeros((b,), device=self.device).uniform_(0, 1)
-        return self.p_losses(img, times, *args, **kwargs)
+        return self.p_losses(img, times, image=image, *args, **kwargs)

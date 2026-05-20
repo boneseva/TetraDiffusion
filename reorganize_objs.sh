@@ -11,7 +11,7 @@
 #   bash reorganize_objs.sh <input_root> <output_root>
 #
 # Example:
-#   bash reorganize_objs.sh /home/evalocal/data/organelles_flat /home/evalocal/data/organelles_raw
+#   bash reorganize_objs.sh /home/evalocal/data_urocell/organelles /home/evalocal/data_urocell/organelles_raw
 
 set -euo pipefail
 

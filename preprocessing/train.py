@@ -707,5 +707,6 @@ if __name__ == "__main__":
             # light.save_env_map(os.path.join(FLAGS.out_dir, "mesh/probe.hdr"), lgt)
 
     except Exception as e:
+        traceback.print_exc()
         print(e)
 

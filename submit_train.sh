@@ -55,6 +55,7 @@ cd "$REPO_DIR"
 # NOTE: job name is renamed below once CATEGORY is known (scontrol cannot be
 #       called before argument parsing, and #SBATCH lines don't expand vars).
 CATEGORY=""
+CATEGORIES=()        # multi-category list  (--categories Cat1 Cat2 ...)
 RUN_NAME=""
 DATA_PATH=""
 MULTI_GPU=false
@@ -63,17 +64,33 @@ EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --category)   CATEGORY="$2";   shift 2 ;;
-        --data_path)  DATA_PATH="$2";  shift 2 ;;
-        --name)       RUN_NAME="$2";   shift 2 ;;
-        --multi_gpu)  MULTI_GPU=true;  shift   ;;
-        --resume)     RESUME=true;     shift   ;;
-        *)            EXTRA_ARGS+=("$1"); shift ;;
+        --category)    CATEGORY="$2";  shift 2 ;;
+        --categories)  shift
+                       # consume all following non-flag words as category names
+                       while [[ $# -gt 0 && ! "$1" =~ ^-- ]]; do
+                           CATEGORIES+=("$1"); shift
+                       done ;;
+        --data_path)   DATA_PATH="$2"; shift 2 ;;
+        --name)        RUN_NAME="$2";  shift 2 ;;
+        --multi_gpu)   MULTI_GPU=true; shift   ;;
+        --resume)      RESUME=true;    shift   ;;
+        *)             EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
+# If --categories was given, it takes priority over --category.
+# If neither was given, fall back to default single category.
+if [ ${#CATEGORIES[@]} -gt 0 ]; then
+    CATEGORY="${CATEGORIES[0]}"          # used for job-name / run-name generation
+elif [ -n "$CATEGORY" ]; then
+    CATEGORIES=("$CATEGORY")
+else
+    CATEGORY="Golgi"
+    CATEGORIES=("Golgi")
+fi
+
 # ─── Defaults ─────────────────────────────────────────────────────────────────
-CATEGORY="${CATEGORY:-Golgi}"
+# CATEGORY / CATEGORIES already set in the parsing block above.
 # When resuming, --name MUST be provided so we target the existing run folder.
 if [ "$RESUME" = true ] && [ -z "$RUN_NAME" ]; then
     echo "ERROR: --resume requires --name <run_name> so the existing checkpoint folder can be found." >&2
@@ -113,7 +130,7 @@ echo "================================================"
 echo "Job ID       : ${SLURM_JOB_ID:-local}"
 echo "Node         : $(hostname)"
 echo "GPUs         : $(echo ${CUDA_VISIBLE_DEVICES:-all})"
-echo "Category     : $CATEGORY"
+echo "Category     : ${CATEGORIES[*]}"
 echo "Run name     : $RUN_NAME"
 echo "Data path    : $DATA_PATH"
 echo "Multi-GPU    : $MULTI_GPU"
@@ -133,7 +150,7 @@ if [ "$MULTI_GPU" = true ]; then
         --gpu_ids all \
         main.py \
         --data_path    "$DATA_PATH" \
-        --shapenet_id  "$CATEGORY" \
+        --shapenet_id  "${CATEGORIES[@]}" \
         --grid_res     128 \
         --name         "$RUN_NAME" \
         --batch_size   4 \
@@ -145,7 +162,7 @@ else
     echo "Launching single-GPU training"
     srun $PYXIS_FLAGS python3 main.py \
         --data_path    "$DATA_PATH" \
-        --shapenet_id  "$CATEGORY" \
+        --shapenet_id  "${CATEGORIES[@]}" \
         --grid_res     128 \
         --name         "$RUN_NAME" \
         --batch_size   4 \
