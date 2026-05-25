@@ -271,10 +271,14 @@ class MeshLoader(Dataset):
     def _init_gt_iterative(self):
         paths_train = list()
         paths_test = list()
+        splits_csv = getattr(self.config, 'splits_csv', None) or "lib/all.csv"
         try:
-            self.splits = pd.read_csv("lib/all.csv")
-        except:
-            self.splits = pd.read_csv("all.csv")
+            self.splits = pd.read_csv(splits_csv)
+        except FileNotFoundError:
+            try:
+                self.splits = pd.read_csv("lib/all.csv")
+            except FileNotFoundError:
+                self.splits = pd.read_csv("all.csv")
 
         # Use an organelle-specific subdirectory so that preprocessing runs for
         # different organelles never overwrite each other's cached sample files.

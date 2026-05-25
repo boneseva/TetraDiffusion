@@ -5,6 +5,14 @@
 #   bash launch.sh --category Golgi
 #   bash launch.sh --category ER --multi_gpu
 #
+# UroCell data (uses data_urocell/ + lib/all_urocell.csv automatically):
+#   bash launch.sh --urocell --category mito
+#   bash launch.sh --urocell --category lyso --multi_gpu
+#   bash launch.sh --urocell --category fv
+#
+# Or manually specify paths:
+#   bash launch.sh --data_path data_urocell --csv_path lib/all_urocell.csv --category mito
+#
 # Usage (resume after timeout):
 #   bash launch.sh --category Golgi --name golgi_20260512_1423 --resume
 #   bash launch.sh --category ER    --name er_20260512_1423    --resume --multi_gpu

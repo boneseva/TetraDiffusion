@@ -93,9 +93,41 @@ def write_config(config: dict, cfg_path: Path) -> None:
         json.dump(config, f)
 
 
-def run_train(preprocessing_dir: Path, cfg_path: Path) -> None:
+def run_train(preprocessing_dir: Path, cfg_path: Path) -> str:
+    """Run train.py and return its combined stdout+stderr output.
+
+    Output is streamed live to the terminal AND captured so the tail can be
+    included in the failure log when the process exits non-zero.
+    """
+    import threading
+
     cmd = [sys.executable, "train.py", "--config", str(cfg_path)]
-    subprocess.run(cmd, cwd=preprocessing_dir, check=True)
+    proc = subprocess.Popen(
+        cmd,
+        cwd=preprocessing_dir,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+
+    lines: List[str] = []
+
+    def _stream() -> None:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            lines.append(line)
+
+    t = threading.Thread(target=_stream, daemon=True)
+    t.start()
+    proc.wait()
+    t.join()
+
+    combined = "".join(lines)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, cmd, output=combined)
+    return combined
 
 
 def append_missing_all_csv_rows(all_csv_path: Path, rows: Iterable[Tuple[str, str]]) -> int:
@@ -241,8 +273,13 @@ def main() -> int:
 
             success += 1
         except Exception as exc:  # noqa: BLE001
-            failed.append((class_id, model_id, str(exc)))
-            print(f"    FAILED {class_id}/{model_id}: {exc}")
+            # Extract the tail of train.py's output for a more useful error message.
+            tail = ""
+            if isinstance(exc, subprocess.CalledProcessError) and exc.output:
+                last_lines = exc.output.splitlines()[-20:]
+                tail = "\n    " + "\n    ".join(last_lines)
+            failed.append((class_id, model_id, str(exc) + tail))
+            print(f"    FAILED {class_id}/{model_id}: {exc}{tail}")
 
     print("\nDone")
     print(f"Success: {success}/{len(jobs)}")

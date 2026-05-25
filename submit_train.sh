@@ -58,6 +58,7 @@ CATEGORY=""
 CATEGORIES=()        # multi-category list  (--categories Cat1 Cat2 ...)
 RUN_NAME=""
 DATA_PATH=""
+CSV_PATH=""
 MULTI_GPU=false
 RESUME=false
 EXTRA_ARGS=()
@@ -71,6 +72,11 @@ while [[ $# -gt 0 ]]; do
                            CATEGORIES+=("$1"); shift
                        done ;;
         --data_path)   DATA_PATH="$2"; shift 2 ;;
+        --csv_path)    CSV_PATH="$2";  shift 2 ;;
+        # Convenience shortcut: --urocell sets data_path + csv_path for UroCell
+        --urocell)     DATA_PATH="${REPO_DIR}/data_urocell"
+                       CSV_PATH="${REPO_DIR}/lib/all_urocell.csv"
+                       shift ;;
         --name)        RUN_NAME="$2";  shift 2 ;;
         --multi_gpu)   MULTI_GPU=true; shift   ;;
         --resume)      RESUME=true;    shift   ;;
@@ -98,6 +104,7 @@ if [ "$RESUME" = true ] && [ -z "$RUN_NAME" ]; then
 fi
 RUN_NAME="${RUN_NAME:-${CATEGORY,,}_$(date +%Y%m%d_%H%M)}"   # e.g. golgi_20260512_1423
 DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
+CSV_PATH="${CSV_PATH:-${REPO_DIR}/lib/all.csv}"
 WANDB_PROJECT="TetraDiffusion"
 
 # ─── Rename SLURM job to include the category (not possible in #SBATCH lines) ─
@@ -150,6 +157,7 @@ if [ "$MULTI_GPU" = true ]; then
         --gpu_ids all \
         main.py \
         --data_path    "$DATA_PATH" \
+        --csv_path     "$CSV_PATH" \
         --shapenet_id  "${CATEGORIES[@]}" \
         --grid_res     128 \
         --name         "$RUN_NAME" \
@@ -162,6 +170,7 @@ else
     echo "Launching single-GPU training"
     srun $PYXIS_FLAGS python3 main.py \
         --data_path    "$DATA_PATH" \
+        --csv_path     "$CSV_PATH" \
         --shapenet_id  "${CATEGORIES[@]}" \
         --grid_res     128 \
         --name         "$RUN_NAME" \

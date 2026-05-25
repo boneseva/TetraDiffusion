@@ -1,5 +1,6 @@
 data_path: /scratch5/TetraDiffusion_Rebuttal/  # override with --data_path
 results_folder: "runs/default"                 # override with --name
+splits_csv: "lib/all.csv"                      # override with --csv_path (use lib/all_urocell.csv for UroCell data)
 
 # Dataset
 dataset:

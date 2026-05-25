@@ -117,8 +117,6 @@ NUM_CATS=${#CATEGORIES[@]}
 # login node we just re-sbatch ourselves with the correct --array range.
 if [[ "$LAUNCH_ARRAY" == true && -z "${SLURM_JOB_ID:-}" ]]; then
     ARRAY_RANGE="0-$((NUM_CATS - 1))"
-    echo "Submitting array job (${NUM_CATS} tasks, array=${ARRAY_RANGE}) ..."
-    echo "  Categories: ${CATEGORIES[*]}"
 
     # Rebuild the category list as explicit --categories args so the re-launched
     # job does not have to re-discover them and gets the same order.
@@ -127,13 +125,26 @@ if [[ "$LAUNCH_ARRAY" == true && -z "${SLURM_JOB_ID:-}" ]]; then
     DRY_SUFFIX=()
     [[ -n "$DRY_RUN_FLAG" ]] && DRY_SUFFIX=("--dry_run")
 
-    sbatch --array="${ARRAY_RANGE}" \
-           "$0" \
-           --input_root  "$INPUT_ROOT" \
-           --output_root "$OUTPUT_ROOT" \
-           "${CATS_ARGS[@]}" \
-           "${DRY_SUFFIX[@]}" \
-           "${EXTRA_FIT_ARGS[@]}"
+    SBATCH_CMD=(
+        sbatch --array="${ARRAY_RANGE}"
+        "$0"
+        --input_root  "$INPUT_ROOT"
+        --output_root "$OUTPUT_ROOT"
+        "${CATS_ARGS[@]}"
+        "${DRY_SUFFIX[@]}"
+        "${EXTRA_FIT_ARGS[@]}"
+    )
+
+    if [[ -n "$DRY_RUN_FLAG" ]]; then
+        echo "[DRY-RUN] Would submit array job (${NUM_CATS} tasks, array=${ARRAY_RANGE})"
+        echo "  Categories : ${CATEGORIES[*]}"
+        echo "  Command    : ${SBATCH_CMD[*]}"
+        exit 0
+    fi
+
+    echo "Submitting array job (${NUM_CATS} tasks, array=${ARRAY_RANGE}) ..."
+    echo "  Categories: ${CATEGORIES[*]}"
+    "${SBATCH_CMD[@]}"
     exit 0
 fi
 
@@ -182,8 +193,12 @@ run_category() {
     echo "================================================"
     nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
-    # Update SLURM job name to include the category (best-effort)
-    if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    # Update SLURM job name to include the category (best-effort).
+    # Only do this for non-array jobs: in array jobs all tasks share the same
+    # SLURM_JOB_ID, so renaming it from one task would overwrite the names set
+    # by the other tasks.  Array tasks are already identified by their index in
+    # squeue output (e.g. tetradiff_preproc[0], tetradiff_preproc[1], ...).
+    if [[ -n "${SLURM_JOB_ID:-}" && -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
         scontrol update "JobId=${SLURM_JOB_ID}" "JobName=preproc_${cat}" 2>/dev/null || true
     fi
 
@@ -199,6 +214,24 @@ run_category() {
     echo "Command: ${FIT_CMD[*]}"
 
     if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+        # ── Install preprocessing-only deps if not already present ────────────
+        # nvdiffrast is not in the main container image.  We install into
+        # ~/.local (--user) so the install persists across array tasks and only
+        # actually runs on the first task that needs it.  Subsequent tasks skip
+        # the heavy build because the import check passes immediately.
+        # If compute nodes have no internet, run the install once interactively:
+        #   srun --pty --gres=gpu:1 --partition=frida \
+        #        srun <pyxis-flags> bash -c "pip install --user git+https://github.com/NVlabs/nvdiffrast.git xatlas"
+        srun $PYXIS_FLAGS bash -c "
+            python3 -c 'import nvdiffrast' 2>/dev/null || {
+                echo '[preproc] Installing nvdiffrast...'
+                pip install --user --quiet git+https://github.com/NVlabs/nvdiffrast.git
+            }
+            python3 -c 'import xatlas' 2>/dev/null || {
+                echo '[preproc] Installing xatlas...'
+                pip install --user --quiet xatlas
+            }
+        "
         srun $PYXIS_FLAGS "${FIT_CMD[@]}"
     else
         # Local / interactive run — no srun/container

@@ -45,6 +45,9 @@ parser.add_argument('--image_cond', action='store_true',
                          'unless fine-tuning with strict=False (image encoder starts random).')
 parser.add_argument('--cfg_scale', type=float, default=None,
                     help='CFG guidance scale for image-conditioned inference (overrides config).')
+parser.add_argument('--csv_path', type=str, default=None,
+                    help='Path to the train/test splits CSV (default: lib/all.csv). '
+                         'Use lib/all_urocell.csv for UroCell data.')
 args = parser.parse_args()
 
 if args.name is not None:
@@ -95,6 +98,9 @@ if args.image_cond:
 
 if args.cfg_scale is not None:
     OmegaConf.update(cfg, 'image_cond.cfg_guidance_scale', args.cfg_scale)
+
+if args.csv_path is not None:
+    OmegaConf.update(cfg, 'splits_csv', args.csv_path)
 
 
 print(cfg)
