@@ -86,10 +86,24 @@ class Trainer(object):
 
             if os.path.exists(ds_cache_path):
                 print(f"[Trainer] Loading cached MeshLoader from {ds_cache_path}")
-                self.ds = torch.load(ds_cache_path, weights_only=False)
-                self.ds.config = cfg
-                print("[Trainer] Cached MeshLoader loaded.")
+                try:
+                    self.ds = torch.load(ds_cache_path, weights_only=False)
+                    self.ds.config = cfg
+                    print("[Trainer] Cached MeshLoader loaded.")
+                except Exception as e:
+                    print(f"[Trainer] WARNING: Failed to load MeshLoader cache "
+                          f"({type(e).__name__}: {e}). "
+                          f"This is usually a pandas/numpy version mismatch. "
+                          f"Deleting stale cache and rebuilding…")
+                    try:
+                        os.remove(ds_cache_path)
+                    except OSError:
+                        pass
+                    self.ds = None  # fall through to rebuild below
             else:
+                self.ds = None
+
+            if self.ds is None:
                 print("[Trainer] Initializing MeshLoader (this may take a while if grid pruning is enabled)...")
                 self.ds = MeshLoader(config=cfg, device="cpu", cuda_device=self.device, accelerator=self.accelerator)
                 print("[Trainer] MeshLoader initialization complete.")
