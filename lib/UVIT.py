@@ -3,6 +3,7 @@ from torch import nn
 import numpy as np
 from lib.ops.Attention import RMSNorm,LearnedSinusoidalPosEmb,LinearAttention, Attention,SinusoidalPosEmb
 from lib.ops.TetraConv import TetraConvBlock, TetraResidualBlock, SingleTetraConvBlock
+from lib.ops.ImageEncoder import build_image_encoder
 from einops.layers.torch import Rearrange
 import torch.utils.checkpoint as checkpoint
 
@@ -201,7 +202,13 @@ class UVIT(nn.Module):
             nn.Linear(time_dim, time_dim)
         ))
 
-
+        # ── Image conditioning ──────────────────────────────────────────────
+        img_cfg = getattr(config, 'image_cond', None)
+        self.use_image_cond = bool(getattr(img_cfg, 'enabled', False)) if img_cfg is not None else False
+        if self.use_image_cond:
+            self.image_encoder = build_image_encoder(img_cfg, out_dim=time_dim)
+            self.null_image_emb = nn.Parameter(torch.zeros(time_dim))
+        # ────────────────────────────────────────────────────────────────────
 
         print("network config",channel_multiplier*first_dim)
 
