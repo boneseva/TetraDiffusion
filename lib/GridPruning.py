@@ -204,7 +204,8 @@ def tetra_subdivide2(cur_verts_features, next_parents, device,any=True):
 
     mask = next_parents == -1
 
-    next_parents[mask] = torch.max(next_parents)+1
+    valid_vals = next_parents[~mask]
+    next_parents[mask] = int(valid_vals.max().item()) + 1 if valid_vals.numel() > 0 else next_parents.shape[0]
     cur_verts_features = torch.nn.functional.pad(cur_verts_features, (0, 0, 0, 1, 0, 0), value=0)
     neighbors = index_select(cur_verts_features, next_parents, dim=1)
 

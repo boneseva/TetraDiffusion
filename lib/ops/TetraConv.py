@@ -115,7 +115,9 @@ class TetraConv(nn.Module):
             neighbor_indices = neighbor_indices.clone()
             self.neighbors_mask = neighbor_indices == -1
             self.valid_neighbors = neighbor_indices != -1
-            neighbor_indices[self.neighbors_mask] = torch.max(neighbor_indices) + 1
+            valid_vals = neighbor_indices[self.valid_neighbors]
+            pad_idx = int(valid_vals.max().item()) + 1 if valid_vals.numel() > 0 else 0
+            neighbor_indices[self.neighbors_mask] = pad_idx
             self.neighbor_indices = neighbor_indices
 
         self.kernel_size = kernel_size

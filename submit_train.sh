@@ -78,7 +78,7 @@ while [[ $# -gt 0 ]]; do
         # Convenience shortcut: --urocell sets data_path + csv_path for UroCell
         # and prefixes the auto-generated run/wandb name with "urocell_"
         --urocell)     UROCELL=true
-                       DATA_PATH="${REPO_DIR}/data_urocell"
+                       DATA_PATH="${REPO_DIR}/data_urocell/preprocessed"
                        CSV_PATH="${REPO_DIR}/lib/all_urocell.csv"
                        shift ;;
         --name)        RUN_NAME="$2"; NAME_EXPLICIT=true; shift 2 ;;
