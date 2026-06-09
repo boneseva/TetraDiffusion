@@ -36,13 +36,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data_root",
         type=Path,
-        default=Path("data/preprocessed"),
+        default=Path("data_urocell/preprocessed"),
         help="Root folder containing <category>/<model_id>/mesh_data/sample.pth (default: data/preprocessed)",
     )
     parser.add_argument(
         "--all_csv",
         type=Path,
-        default=Path("lib/all.csv"),
+        default=Path("lib/all_urocell.csv"),
         help="Path to all.csv (default: lib/all.csv)",
     )
     parser.add_argument(

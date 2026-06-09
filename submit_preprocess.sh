@@ -166,7 +166,7 @@ else
 fi
 
 # ─── Container setup (mirrors submit_train.sh) ────────────────────────────────
-CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
+CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff_updated.sqfs}"
 PYXIS_FLAGS="--container-image=${CONTAINER} \
              --container-mounts=${REPO_DIR}:${REPO_DIR},${INPUT_ROOT}:${INPUT_ROOT},${OUTPUT_ROOT}:${OUTPUT_ROOT} \
              --container-mount-home \
