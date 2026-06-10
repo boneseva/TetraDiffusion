@@ -83,36 +83,36 @@ echo "════════════════════════�
 # ── Regular DB — Mitochondria ────────────────────────────────
 echo ""
 echo "  [1/8]  Regular DB / Mitochondria / Bio ON"
-submit "reg_mito_bio_on" \
-    --category Mitochondria
+# submit "reg_mito_bio_on" \
+#    --category Mitochondria
 
 echo "  [2/8]  Regular DB / Mitochondria / Bio OFF"
-submit "reg_mito_bio_off" \
-    --category Mitochondria \
-    --no_bio_loss
+# submit "reg_mito_bio_off" \
+#    --category Mitochondria \
+#    --no_bio_loss
 
 # ── Regular DB — Lysosome ────────────────────────────────────
 echo ""
 echo "  [3/8]  Regular DB / Lysosome / Bio ON"
-submit "reg_lyso_bio_on" \
-    --category Lysosome
+# submit "reg_lyso_bio_on" \
+#    --category Lysosome
 
 echo "  [4/8]  Regular DB / Lysosome / Bio OFF"
-submit "reg_lyso_bio_off" \
-    --category Lysosome \
-    --no_bio_loss
+# submit "reg_lyso_bio_off" \
+#    --category Lysosome \
+#    --no_bio_loss
 
 # ── UroCell — Mitochondria ───────────────────────────────────
 echo ""
 echo "  [5/8]  UroCell / Mitochondria / Bio ON"
-submit "urocell_mito_bio_on" \
+# submit "urocell_mito_bio_on" \
     --urocell \
-    --category Mitochondria
+    --category mito
 
 echo "  [6/8]  UroCell / Mitochondria / Bio OFF"
 submit "urocell_mito_bio_off" \
     --urocell \
-    --category Mitochondria \
+    --category mito \
     --no_bio_loss
 
 # ── UroCell — Lysosome ───────────────────────────────────────
@@ -120,12 +120,12 @@ echo ""
 echo "  [7/8]  UroCell / Lysosome / Bio ON"
 submit "urocell_lyso_bio_on" \
     --urocell \
-    --category Lysosome
+    --category lyso
 
 echo "  [8/8]  UroCell / Lysosome / Bio OFF"
 submit "urocell_lyso_bio_off" \
     --urocell \
-    --category Lysosome \
+    --category lyso \
     --no_bio_loss
 
 
