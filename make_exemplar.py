@@ -132,18 +132,82 @@ def _load_tet_vertices(grid_res: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# SDF from mesh
+# Shared EDT core — used by both mesh and volume paths
 # ---------------------------------------------------------------------------
 
-def _sdf_from_mesh(mesh_path: str, verts: np.ndarray) -> np.ndarray:
-    """Compute signed distances from a surface mesh at tetrahedral vertices.
+def _sdf_from_edt(interior: np.ndarray, verts: np.ndarray) -> np.ndarray:
+    """Convert a binary occupancy volume to SDF values at tet vertex positions.
 
-    Uses trimesh proximity queries.  Sign convention: interior → SDF < 0.
+    Runs two distance transforms (interior + exterior), combines them into a
+    signed field, then samples at the tetrahedral vertex coordinates via
+    nearest-neighbour lookup.
 
     Parameters
     ----------
-    mesh_path : str
-    verts     : np.ndarray [N, 3]
+    interior : np.ndarray [D, H, W]  bool  — True = inside the organelle.
+    verts    : np.ndarray [N, 3]    float32 — zero-centred tet vertex positions.
+
+    Returns
+    -------
+    np.ndarray [N]  float32  — SDF (negative inside, positive outside).
+    """
+    try:
+        from scipy.ndimage import distance_transform_edt
+    except ImportError:
+        sys.exit(
+            "[make_exemplar] ERROR: 'scipy' is not installed.\n"
+            "Run:  pip install scipy"
+        )
+
+    exterior = ~interior
+    D, H, W  = interior.shape
+
+    print("[make_exemplar] Running distance transform (interior) …")
+    edt_in  = distance_transform_edt(interior).astype(np.float32)
+    print("[make_exemplar] Running distance transform (exterior) …")
+    edt_out = distance_transform_edt(exterior).astype(np.float32)
+
+    sdf_vol = edt_out - edt_in   # negative inside, positive outside
+
+    # ── Nearest-neighbour sampling at tet vertex positions ─────────────────
+    tet_min  = verts.min(0)
+    tet_span = (verts.max(0) - tet_min).clip(min=1e-8)
+
+    idx_d = ((verts[:, 0] - tet_min[0]) / tet_span[0] * (D - 1)).round().astype(int).clip(0, D - 1)
+    idx_h = ((verts[:, 1] - tet_min[1]) / tet_span[1] * (H - 1)).round().astype(int).clip(0, H - 1)
+    idx_w = ((verts[:, 2] - tet_min[2]) / tet_span[2] * (W - 1)).round().astype(int).clip(0, W - 1)
+
+    sdf = sdf_vol[idx_d, idx_h, idx_w]
+    print(f"[make_exemplar] SDF range: [{sdf.min():.4f}, {sdf.max():.4f}]  "
+          f"interior vertices: {(sdf < 0).sum():,}")
+    return sdf
+
+
+# ---------------------------------------------------------------------------
+# SDF from mesh  (voxelise -> EDT -- avoids per-vertex ray casting entirely)
+# ---------------------------------------------------------------------------
+
+def _sdf_from_mesh(mesh_path: str, verts: np.ndarray,
+                   voxel_resolution: int = 256) -> np.ndarray:
+    """Compute signed distances from a surface mesh at tetrahedral vertices.
+
+    Strategy
+    --------
+    Instead of querying every tet vertex directly against the mesh (which
+    requires one ray-cast per point and is O(N * F) at 277K+ vertices), the
+    mesh is first **voxelised** at ``voxel_resolution`` along the longest
+    axis, then a pair of Euclidean Distance Transforms are run on the
+    resulting binary volume.  The total runtime is O(D*H*W) regardless of
+    tet vertex count -- typically 3-15 seconds on a CPU.
+
+    Sign convention: interior -> SDF < 0.
+
+    Parameters
+    ----------
+    mesh_path        : str
+    verts            : np.ndarray [N, 3]
+    voxel_resolution : int   number of voxels along the longest axis
+                             (default 256; increase for finer meshes).
 
     Returns
     -------
@@ -154,49 +218,44 @@ def _sdf_from_mesh(mesh_path: str, verts: np.ndarray) -> np.ndarray:
     except ImportError:
         sys.exit(
             "[make_exemplar] ERROR: 'trimesh' is not installed.\n"
-            "Run:  pip install trimesh rtree"
+            "Run:  pip install trimesh"
         )
 
     print(f"[make_exemplar] Loading mesh: {mesh_path}")
     mesh = trimesh.load(mesh_path, force="mesh", process=True)
 
     if not isinstance(mesh, trimesh.Trimesh):
-        # Some loaders return a Scene; extract the geometry
         geom = list(mesh.geometry.values())
         if not geom:
             sys.exit("[make_exemplar] ERROR: mesh file contained no geometry.")
         mesh = trimesh.util.concatenate(geom)
 
-    print(f"[make_exemplar] Mesh loaded: {len(mesh.vertices)} verts, "
-          f"{len(mesh.faces)} faces")
+    print(f"[make_exemplar] Mesh loaded: {len(mesh.vertices):,} verts, "
+          f"{len(mesh.faces):,} faces")
 
-    # Scale mesh to fit inside the tetrahedral bounding box so that the SDF
-    # is meaningful in the same coordinate space.
-    mesh_bb   = mesh.bounds                # [2, 3]
-    mesh_span = mesh_bb[1] - mesh_bb[0]
-    tet_bb    = np.stack([verts.min(0), verts.max(0)])
-    tet_span  = tet_bb[1] - tet_bb[0]
+    # ── Scale + centre mesh into the tet bounding box ──────────────────────
+    mesh_bb    = mesh.bounds
+    mesh_span  = (mesh_bb[1] - mesh_bb[0]).clip(min=1e-8)
+    tet_bb     = np.stack([verts.min(0), verts.max(0)])
+    tet_span   = tet_bb[1] - tet_bb[0]
 
-    scale = (tet_span / mesh_span.clip(min=1e-8)).min()
-
-    mesh_centre  = mesh_bb.mean(0)
-    tet_centre   = tet_bb.mean(0)
-    mesh.apply_translation(-mesh_centre)
+    scale = (tet_span / mesh_span).min()
+    mesh.apply_translation(-mesh_bb.mean(0))
     mesh.apply_scale(scale)
-    mesh.apply_translation(tet_centre)
+    mesh.apply_translation(tet_bb.mean(0))
 
-    print(f"[make_exemplar] Running proximity query on {len(verts):,} vertices …")
+    # ── Voxelise ───────────────────────────────────────────────────────────
+    pitch = mesh.extents.max() / voxel_resolution
+    print(f"[make_exemplar] Voxelising at pitch={pitch:.5f} "
+          f"(target {voxel_resolution} voxels on longest axis) …")
 
-    # unsigned distances + containment
-    _, unsigned_dists, _ = trimesh.proximity.closest_point(mesh, verts)
-    inside = mesh.contains(verts)          # [N] bool
+    voxgrid  = trimesh.voxel.creation.voxelize(mesh, pitch=pitch)
+    interior = voxgrid.matrix.astype(bool)   # [D, H, W]  True = inside
 
-    # SDF: negative inside, positive outside
-    sdf = np.where(inside, -unsigned_dists, unsigned_dists).astype(np.float32)
+    print(f"[make_exemplar] Voxel grid shape: {interior.shape}, "
+          f"interior voxels: {interior.sum():,}")
 
-    print(f"[make_exemplar] SDF range: [{sdf.min():.4f}, {sdf.max():.4f}]  "
-          f"interior vertices: {inside.sum():,}")
-    return sdf
+    return _sdf_from_edt(interior, verts)
 
 
 # ---------------------------------------------------------------------------
@@ -205,11 +264,6 @@ def _sdf_from_mesh(mesh_path: str, verts: np.ndarray) -> np.ndarray:
 
 def _sdf_from_volume(npy_path: str, verts: np.ndarray) -> np.ndarray:
     """Build a signed distance field from a binary voxel occupancy array.
-
-    1. Run EDT on the interior mask  → distance-to-surface from inside.
-    2. Run EDT on the exterior mask  → distance-to-surface from outside.
-    3. SDF = exterior_edt − interior_edt  (negative inside, positive outside).
-    4. Interpolate (nearest-neighbour) onto tetrahedral vertex positions.
 
     Parameters
     ----------
@@ -220,14 +274,6 @@ def _sdf_from_volume(npy_path: str, verts: np.ndarray) -> np.ndarray:
     -------
     np.ndarray [N]  float32
     """
-    try:
-        from scipy.ndimage import distance_transform_edt
-    except ImportError:
-        sys.exit(
-            "[make_exemplar] ERROR: 'scipy' is not installed.\n"
-            "Run:  pip install scipy"
-        )
-
     print(f"[make_exemplar] Loading voxel volume: {npy_path}")
     vol = np.load(npy_path)
 
@@ -237,44 +283,11 @@ def _sdf_from_volume(npy_path: str, verts: np.ndarray) -> np.ndarray:
         )
 
     interior = vol.astype(bool)
-    exterior = ~interior
-
     print(f"[make_exemplar] Volume shape: {vol.shape}, "
           f"interior voxels: {interior.sum():,}")
 
-    # EDT distances (in voxel units)
-    print("[make_exemplar] Running distance transform (interior) …")
-    edt_in  = distance_transform_edt(interior).astype(np.float32)  # 0 outside
-    print("[make_exemplar] Running distance transform (exterior) …")
-    edt_out = distance_transform_edt(exterior).astype(np.float32)  # 0 inside
+    return _sdf_from_edt(interior, verts)
 
-    # Signed distance field on the voxel grid (negative inside)
-    sdf_vol = edt_out - edt_in   # [D, H, W]  float32
-
-    # ── Map tet vertex positions to voxel indices ──────────────────────────
-    D, H, W = vol.shape
-
-    # Normalise tet coords to [0, D/H/W - 1] voxel index space using the
-    # tet bounding box, then clamp to valid voxel indices.
-    tet_min = verts.min(0)   # [3]
-    tet_max = verts.max(0)   # [3]
-    tet_span = (tet_max - tet_min).clip(min=1e-8)
-
-    # verts[:, 0] → depth axis (D), [1] → height (H), [2] → width (W)
-    idx_d = ((verts[:, 0] - tet_min[0]) / tet_span[0] * (D - 1)).round().astype(int)
-    idx_h = ((verts[:, 1] - tet_min[1]) / tet_span[1] * (H - 1)).round().astype(int)
-    idx_w = ((verts[:, 2] - tet_min[2]) / tet_span[2] * (W - 1)).round().astype(int)
-
-    # Clamp to grid bounds
-    idx_d = idx_d.clip(0, D - 1)
-    idx_h = idx_h.clip(0, H - 1)
-    idx_w = idx_w.clip(0, W - 1)
-
-    sdf = sdf_vol[idx_d, idx_h, idx_w]  # [N]  float32
-
-    print(f"[make_exemplar] SDF range: [{sdf.min():.4f}, {sdf.max():.4f}]  "
-          f"interior vertices: {(sdf < 0).sum():,}")
-    return sdf
 
 
 # ---------------------------------------------------------------------------
