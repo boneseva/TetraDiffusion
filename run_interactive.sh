@@ -18,8 +18,6 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NUM_GPUS=1
 PARTITION="dev"
 WALL_TIME="02:00:00"
-CPUS=8
-MEM="64G"
 CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
 
 # ─── Argument parsing ─────────────────────────────────────────────────────────
@@ -28,15 +26,13 @@ while [[ $# -gt 0 ]]; do
         --gpus)      NUM_GPUS="$2";   shift 2 ;;
         --partition) PARTITION="$2";  shift 2 ;;
         --time)      WALL_TIME="$2";  shift 2 ;;
-        --cpus)      CPUS="$2";       shift 2 ;;
-        --mem)       MEM="$2";        shift 2 ;;
         *)
             echo "Usage: bash run_interactive.sh [--gpus N] [--partition NAME] [--time HH:MM:SS] [--cpus N] [--mem Xg]" >&2
             exit 1 ;;
     esac
 done
 
-echo "Requesting: ${NUM_GPUS}x H100 | ${CPUS} CPUs | ${MEM} | ${WALL_TIME} | partition=${PARTITION}"
+echo "Requesting: ${NUM_GPUS} | ${WALL_TIME} | partition=${PARTITION}"
 echo "Container : ${CONTAINER}"
 echo "Repo      : ${REPO_DIR}"
 echo "→ Waiting for allocation…"
@@ -44,9 +40,7 @@ echo "→ Waiting for allocation…"
 exec srun \
     --pty \
     --partition="${PARTITION}" \
-    --gres="gpu:H100:${NUM_GPUS}" \
-    --cpus-per-task="${CPUS}" \
-    --mem="${MEM}" \
+    --gres="gpu:${NUM_GPUS}" \
     --time="${WALL_TIME}" \
     --job-name="tetradiff_shell" \
     --container-image="${CONTAINER}" \
