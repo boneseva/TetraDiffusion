@@ -30,6 +30,8 @@ einops==0.8.0
 
 # ── 3D / mesh ────────────────────────────────────────────────────────────────
 trimesh==4.4.4
+scipy>=1.11.0          # EDT for voxel→SDF conversion in make_exemplar.py
+rtree>=1.2.0           # spatial index backend required by trimesh raycasting
 
 # ── Config / experiment tracking ─────────────────────────────────────────────
 omegaconf==2.3.0

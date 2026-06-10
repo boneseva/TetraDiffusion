@@ -6,6 +6,7 @@ from glob import glob
 from lib.GridPruning import mask_cube
 from tqdm import tqdm
 import pandas as pd
+import re as _re
 
 
 
@@ -298,7 +299,18 @@ class MeshLoader(Dataset):
         counter = 0
         for shapenetid in self.config.dataset.shapenet_ids:
             self.shapenet_ids[shapenetid] = counter
-            file_list.extend(glob(f"{self.config.data_path}/{shapenetid}/*/*/sample.pth"))
+            # Try the standard nested layout first: {category}/{model_id}/mesh_data/sample.pth
+            found = glob(f"{self.config.data_path}/{shapenetid}/*/*/sample.pth")
+            if not found:
+                # Fall back to flat layout: {category}/{model_id}/sample.pth
+                found = glob(f"{self.config.data_path}/{shapenetid}/*/sample.pth")
+                if found:
+                    print(f"[MeshLoader] Using flat layout (no mesh_data/ subdir) for '{shapenetid}'")
+                else:
+                    print(f"[MeshLoader] WARNING: no sample.pth found for '{shapenetid}' "
+                          f"under '{self.config.data_path}/{shapenetid}'. "
+                          f"Check that preprocessing has completed and --data_path is correct.")
+            file_list.extend(found)
             counter += 1
 
         self.tet_faces = self.tet_faces.to(self.cuda_device)
@@ -307,7 +319,20 @@ class MeshLoader(Dataset):
         for i in tqdm(range(len(file_list[:self.config.dataset.num_samples]))):
 
             name = file_list[i]
-            model_id = name.split('/')[-3]
+            # model_id is the first subdirectory under the category folder,
+            # regardless of whether the layout is {model_id}/mesh_data/sample.pth
+            # or the flat {model_id}/sample.pth.
+            # Split on both / and \ for cross-platform safety.
+            name_parts = _re.split(r'[\\/]', name)
+            # Find the category in the path parts and take the next element as model_id.
+            model_id_idx = None
+            for shapenetid in self.config.dataset.shapenet_ids:
+                if shapenetid in name_parts:
+                    idx = name_parts.index(shapenetid)
+                    if idx + 1 < len(name_parts):
+                        model_id_idx = idx + 1
+                    break
+            model_id = name_parts[model_id_idx] if model_id_idx is not None else name_parts[-3]
 
             # The CSV-based train/test split is only used for ShapeNet categories
             # that appear in lib/all.csv.  For organelle data the IDs won't be in

@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 from einops import rearrange, repeat, reduce
 from lib.ops.Misc import default, exists
-from lib.ops.BioConstraints import biological_constraints_loss
+from lib.ops.BioConstraints import biological_constraints_loss, organelle_loss_registry
 
 
 # Utility functions
@@ -124,23 +124,64 @@ class GaussianDiffusion(nn.Module):
         # Biological constraint losses
         # ------------------------------------------------------------------
         bio_cfg = getattr(cfg, 'diffusion', None)
-        self.bio_loss_weight     = float(getattr(bio_cfg, 'bio_loss_weight', 0.0))
-        self.bio_loss_type       = str(getattr(bio_cfg, 'bio_loss_type', 'both'))
+        self.bio_loss_weight        = float(getattr(bio_cfg, 'bio_loss_weight', 0.0))
+        self.bio_loss_type          = str(getattr(bio_cfg, 'bio_loss_type', 'both'))
         self.bio_curvature_softness = float(getattr(bio_cfg, 'bio_curvature_softness', 0.15))
-        self.bio_snr_weighting   = bool(getattr(bio_cfg, 'bio_snr_weighting', True))
+        self.bio_eikonal_weight     = float(getattr(bio_cfg, 'bio_eikonal_weight', 0.0))
+
+        # SNR gate — governs when biological losses are active.
+        #   "soft"     : w(t) = SNR(t) / (SNR(t) + 1)  (default, continuous)
+        #   "hard_X"   : 1.0 if SNR(t) corresponds to t < X, else 0.0
+        #   "none"     : constant 1.0 (no gating)
+        self.snr_gate = str(getattr(bio_cfg, 'snr_gate', 'soft'))
+        # Legacy fallback: if old bio_snr_weighting=False was set, honour it
+        if not bool(getattr(bio_cfg, 'bio_snr_weighting', True)):
+            self.snr_gate = 'none'
 
         # Store the tetrahedral-graph neighbour table (finest resolution) on CPU;
         # it will be moved to the active device on first use.
-        self._bio_neighbors = None
+        self._bio_neighbors  = None
+        self._bio_edge_lengths = None
         if self.bio_loss_weight > 0.0 and ds is not None:
             # After grid-pruning ds.neighbors[-1] is in the pruned vertex space —
             # the same space the training data lives in.
             self._bio_neighbors = ds.neighbors[-1].long().cpu()
+
+            # Precompute edge lengths for the optional Eikonal regulariser.
+            if self.bio_eikonal_weight > 0.0:
+                self._bio_edge_lengths = self._precompute_edge_lengths(
+                    ds.tet_verts.cpu(), self._bio_neighbors
+                )
+
             print(
                 f"[DDPM] Biological constraints enabled: "
                 f"type={self.bio_loss_type}, weight={self.bio_loss_weight}, "
+                f"snr_gate={self.snr_gate}, "
+                f"eikonal_weight={self.bio_eikonal_weight}, "
                 f"neighbor shape={self._bio_neighbors.shape}"
             )
+
+    @staticmethod
+    def _precompute_edge_lengths(tet_verts: torch.Tensor,
+                                  neighbors: torch.Tensor) -> torch.Tensor:
+        """Precompute per-edge Euclidean lengths for the Eikonal loss.
+
+        Args:
+            tet_verts:  [N, 3] float32 vertex positions (pruned space).
+            neighbors:  [N, K] int64 neighbour table (−1 = absent).
+
+        Returns:
+            Tensor [N, K] with edge lengths; invalid slots filled with 1.0.
+        """
+        valid = (neighbors >= 0)          # [N, K]
+        neigh_safe = neighbors.clone()
+        neigh_safe[~valid] = 0            # redirect invalid to vertex 0
+
+        neigh_pos = tet_verts[neigh_safe]                   # [N, K, 3]
+        self_pos  = tet_verts.unsqueeze(1).expand_as(neigh_pos)  # [N, K, 3]
+        edge_len  = (neigh_pos - self_pos).norm(dim=-1)     # [N, K]
+        edge_len[~valid] = 1.0            # safe dummy for invalid entries
+        return edge_len
 
     @property
     def device(self):
@@ -296,23 +337,51 @@ class GaussianDiffusion(nn.Module):
             x_start_pred = x_start_pred.clamp(-1., 1.)
 
             neighbors = self._bio_neighbors.to(x.device)
-            bio = biological_constraints_loss(
-                x_start_pred,
-                neighbors,
-                loss_type=self.bio_loss_type,
+            edge_lengths = (
+                self._bio_edge_lengths.to(x.device)
+                if self._bio_edge_lengths is not None else None
+            )
+            bio = organelle_loss_registry.compute_loss(
+                organelle_name=self.bio_loss_type,
+                x_start=x_start_pred,
+                neighbors=neighbors,
                 surface_softness=self.bio_curvature_softness,
+                edge_lengths=edge_lengths,
+                eikonal_weight=self.bio_eikonal_weight,
             )
 
-            # SNR-based weighting: w(t) = SNR/(SNR+1) → 0 at high noise, →1 at low noise
-            if self.bio_snr_weighting:
+            # ------------------------------------------------------------------
+            # SNR gate: controls when the biological losses are active.
+            #   "soft"   : w(t) = SNR(t) / (SNR(t) + 1)  — continuous gate
+            #   "hard_X" : step function at noise level t = X (X ∈ {0.3,0.5,0.7})
+            #   "none"   : no gating, constant weight 1.0
+            # ------------------------------------------------------------------
+            gate = self.snr_gate
+            if gate == 'soft':
                 snr_weight = (snr / (snr + 1)).mean()
-            else:
+            elif gate == 'none':
                 snr_weight = 1.0
+            elif gate.startswith('hard_'):
+                # Convert hard threshold from noise-fraction t to SNR domain.
+                # The cosine schedule maps t ∈ [0,1] → SNR; at the threshold
+                # t* the corresponding SNR is SNR* = tan²(t_min + t*(t_max-t_min)).
+                # Here we implement the gate directly in t-space: the batch
+                # SNR values are per-sample, so we approximate by checking
+                # whether the mean t is below the threshold.
+                try:
+                    t_thresh = float(gate.split('_')[1])
+                except (IndexError, ValueError):
+                    t_thresh = 0.5
+                # times is in [0,1]; high SNR = low t (clean), low SNR = high t (noisy)
+                # We gate ON (1.0) when t < t_thresh, OFF (0.0) otherwise.
+                snr_weight = (times < t_thresh).float().mean()
+            else:
+                snr_weight = (snr / (snr + 1)).mean()   # default to soft
 
             weighted_bio = self.bio_loss_weight * snr_weight * bio
 
             # Expose components for external logging (Trainer reads these)
-            self._last_bio_loss     = bio.detach()
+            self._last_bio_loss       = bio.detach()
             self._last_diffusion_loss = diffusion_loss.detach()
 
             return diffusion_loss + weighted_bio

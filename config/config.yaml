@@ -53,8 +53,14 @@ diffusion:
   # generated shapes become rough or biologically implausible.
   bio_loss_weight: 0.005        # λ — overall weight of biological constraint term
   bio_loss_type: "both"         # "laplacian" | "curvature" | "both"
-  bio_snr_weighting: True       # scale loss by SNR(t)/(SNR(t)+1) — only penalise at low noise
+  snr_gate: "soft"              # "soft" | "hard_0.3" | "hard_0.5" | "hard_0.7" | "none"
   bio_curvature_softness: 0.15  # width of surface weighting kernel exp(-|sdf|/σ)
+
+  # Eikonal regularisation — penalises |∇φ|² deviating from 1 on the predicted
+  # clean SDF.  Protects the curvature approximation H ≈ −Δφ when the model's
+  # prediction is not a perfect SDF.  Requires tet_verts to be available (ds).
+  # Set to 0.0 to disable (default); typical values: 1e-3 – 1e-2.
+  bio_eikonal_weight: 0.0       # weight for Eikonal loss (0 = disabled)
 
 
 # 2-D image conditioning  (see IMAGE_CONDITIONING.md for full details)

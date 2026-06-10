@@ -1,6 +1,7 @@
 import argparse
 from omegaconf import OmegaConf
 from lib.Trainer import Trainer
+from lib.ops.BioConstraints import ExemplarLossProfile, organelle_loss_registry
 import torch
 import warnings
 # Suppress specific warnings - it doesnt matter in inference
@@ -48,6 +49,10 @@ parser.add_argument('--cfg_scale', type=float, default=None,
 parser.add_argument('--csv_path', type=str, default=None,
                     help='Path to the train/test splits CSV (default: lib/all.csv). '
                          'Use lib/all_urocell.csv for UroCell data.')
+parser.add_argument('--exemplar_path', type=str, default=None,
+                    help='Path to a preprocessed .pt exemplar sample file. '
+                         'When provided, registers an ExemplarLossProfile on the '
+                         '"exemplar" organelle slot and sets bio_loss_type=exemplar.')
 args = parser.parse_args()
 
 if args.name is not None:
@@ -126,4 +131,23 @@ trainer = Trainer(
 
 #if cfg.load_weights:
 #    trainer.load(cfg.num_weights)
+
+# ── Exemplar style prior (optional) ────────────────────────────────────────
+# Instantiate and register the ExemplarLossProfile only when --exemplar_path
+# is supplied.  If omitted the registry stays empty for the "exemplar" slot
+# and training falls back to the standard bio_loss_type from the config.
+import os as _os
+if args.exemplar_path is not None and _os.path.isfile(args.exemplar_path):
+    _exemplar_profile = ExemplarLossProfile(
+        exemplar_path=args.exemplar_path,
+        mask=trainer.ds.mask,
+        neighbors=trainer.ds.neighbors[-1].long(),
+    )
+    organelle_loss_registry.register_loss("exemplar", _exemplar_profile)
+    OmegaConf.update(cfg, 'diffusion.bio_loss_type', 'exemplar')
+    print(f"[main] Exemplar style prior registered. bio_loss_type forced to 'exemplar'.")
+elif args.exemplar_path is not None:
+    print(f"[main] WARNING: --exemplar_path '{args.exemplar_path}' not found; "
+          f"exemplar prior skipped.")
+
 trainer.train()

@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import torch
 from torch import Tensor
+from typing import Callable, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -177,11 +178,87 @@ def mean_curvature_loss(
     return (lap.pow(2) * surface_weight).mean()
 
 
+def eikonal_loss(
+    x_start: Tensor,
+    neighbors: Tensor,
+    edge_lengths: Tensor,
+) -> Tensor:
+    """
+    Eikonal regularisation loss: penalises deviations of the per-vertex
+    SDF gradient magnitude from 1.
+
+    Biological / mathematical rationale
+    ------------------------------------
+    The curvature approximation H ≈ −Δ_graph(φ) is valid only when φ
+    satisfies the Eikonal equation |∇φ| = 1 (i.e., φ is a true signed
+    distance field).  During diffusion training the model's intermediate
+    clean-sample estimate x̂_0 is not guaranteed to satisfy this property.
+    Penalising deviations from |∇φ| ≈ 1 protects the curvature estimate
+    against SDF-gradient collapse or explosion and improves the overall
+    geometric quality of generated meshes.
+
+    Implementation
+    --------------
+    For each vertex i and neighbour j we form a directional-derivative
+    estimate:
+
+        ∂φ/∂r_{ij} ≈ (φ_j − φ_i) / ‖v_j − v_i‖
+
+    The squared gradient magnitude at i is approximated by the mean of
+    squared directional derivatives over N(i).  The loss penalises
+    (|∇φ_i|² − 1)².
+
+    Parameters
+    ----------
+    x_start : Tensor [B, N, C]
+        Predicted clean sample; channel 0 is the SDF.
+    neighbors : Tensor [N, K]
+        Neighbour-index table (−1 = absent / padding).
+    edge_lengths : Tensor [N, K]
+        Precomputed Euclidean length of each graph edge.
+        Invalid entries (corresponding to neighbors == −1) should be
+        set to 1.0 to avoid division-by-zero.
+
+    Returns
+    -------
+    Scalar Tensor.
+    """
+    B, N, C = x_start.shape
+    sdf = x_start[:, :, 0]         # [B, N]
+
+    valid = (neighbors >= 0)        # [N, K]
+    n_valid = valid.float().sum(dim=1, keepdim=True).clamp(min=1.0)  # [N, 1]
+
+    neigh_safe = neighbors.clone()
+    neigh_safe[~valid] = N          # redirect to throw-away padding slot
+
+    # Pad SDF with one zero vertex so index N is harmless
+    padded_sdf = torch.cat([sdf, sdf.new_zeros(B, 1)], dim=1)  # [B, N+1]
+
+    # Gather neighbour SDF values → [B, N, K]
+    neigh_sdf = padded_sdf[:, neigh_safe]
+
+    # Directional derivatives: (φ_j − φ_i) / ‖v_j − v_i‖  → [B, N, K]
+    inv_len = (1.0 / edge_lengths.unsqueeze(0).clamp(min=1e-6))  # [1, N, K]
+    dd = (neigh_sdf - sdf.unsqueeze(-1)) * inv_len               # [B, N, K]
+
+    # Zero out invalid entries
+    dd = dd * valid.unsqueeze(0).float()
+
+    # Mean squared directional derivative = approximation of |∇φ|²
+    grad_sq = dd.pow(2).sum(dim=2) / n_valid.unsqueeze(0)        # [B, N]
+
+    # Eikonal penalty: (|∇φ|² − 1)²
+    return (grad_sq - 1.0).pow(2).mean()
+
+
 def biological_constraints_loss(
     x_start: Tensor,
     neighbors: Tensor,
     loss_type: str = "both",
     surface_softness: float = 0.15,
+    edge_lengths: Optional[Tensor] = None,
+    eikonal_weight: float = 0.0,
 ) -> Tensor:
     """
     Combined biological constraint loss.
@@ -196,6 +273,12 @@ def biological_constraints_loss(
         ``"both"``       — sum of both (default).
     surface_softness : float
         Passed to ``mean_curvature_loss``.
+    edge_lengths : Tensor [N, K] or None
+        Required when ``eikonal_weight > 0``.  Precomputed Euclidean
+        edge lengths with 1.0 in invalid (−1 neighbour) slots.
+    eikonal_weight : float
+        Weight for the optional Eikonal regularisation term.  When zero
+        (default) the term is not evaluated.
 
     Returns
     -------
@@ -211,5 +294,227 @@ def biological_constraints_loss(
             x_start, neighbors, surface_softness=surface_softness
         )
 
+    if eikonal_weight > 0.0 and edge_lengths is not None:
+        total = total + eikonal_weight * eikonal_loss(
+            x_start, neighbors, edge_lengths
+        )
+
     return total
 
+
+# ---------------------------------------------------------------------------
+# ExemplarLossProfile — style prior derived from a single reference sample
+# ---------------------------------------------------------------------------
+
+class ExemplarLossProfile:
+    """
+    Derives a curvature-based style prior from a single pre-processed exemplar
+    file (``sample_*.pt`` / ``sample.pth`` format containing ``[sdf, disp, color]``).
+
+    At construction time the target curvature statistics (mean and std of the
+    surface-weighted graph-Laplacian of the SDF) and the maximum interior depth
+    are computed under ``torch.no_grad()`` and cached.  During training these
+    are compared against the model's predicted clean sample to impose a soft
+    morphological shape prior.
+
+    Parameters
+    ----------
+    exemplar_path : str
+        Path to a ``.pt`` file whose first element is a per-vertex SDF tensor.
+    mask : torch.Tensor [N_full]
+        Boolean pruning mask (0 = kept, non-zero = pruned).
+    neighbors : torch.Tensor [N_kept, K]
+        Finest-resolution graph neighbour table for the pruned vertex set
+        (−1 in absent/padding slots).
+    """
+
+    def __init__(
+        self,
+        exemplar_path: str,
+        mask: torch.Tensor,
+        neighbors: torch.Tensor,
+    ) -> None:
+        self._neighbors_cpu = neighbors.long().cpu()   # [N_kept, K]
+
+        # ── Load and isolate kept vertices ──────────────────────────────────
+        raw = torch.load(exemplar_path, weights_only=False)
+        # raw is [sdf, disp, color] — take the SDF channel
+        sdf_full: torch.Tensor = raw[0].float().cpu()  # [N_full]
+        self.target_sdf = sdf_full[mask == 0]          # [N_kept]
+
+        # ── Compute target curvature statistics (no gradient tape needed) ──
+        with torch.no_grad():
+            # Surface-weighted SDF for curvature proxy
+            sdf_b = self.target_sdf.unsqueeze(0).unsqueeze(-1)  # [1, N, 1]
+            surface_weight = torch.exp(-sdf_b.abs() / 0.15)     # [1, N, 1]
+
+            lap = _graph_laplacian(sdf_b, self._neighbors_cpu)   # [1, N, 1]
+            weighted_lap = (lap * surface_weight).squeeze()       # [N]
+
+            self.target_mean_curvature: float = float(weighted_lap.mean().item())
+            self.target_std_curvature: float  = float(weighted_lap.std().item())
+
+            # Maximum interior depth (absolute value of the most negative SDF)
+            interior = self.target_sdf[self.target_sdf < 0]
+            self.target_max_depth: float = (
+                float(interior.min().abs().item()) if interior.numel() > 0 else 1.0
+            )
+
+        print(
+            f"[ExemplarLossProfile] Loaded exemplar '{exemplar_path}': "
+            f"mean_curvature={self.target_mean_curvature:.4f}, "
+            f"std_curvature={self.target_std_curvature:.4f}, "
+            f"max_depth={self.target_max_depth:.4f}"
+        )
+
+    # ------------------------------------------------------------------
+    def __call__(
+        self,
+        x_start: Tensor,
+        neighbors: Tensor,
+        kwargs: dict,
+    ) -> Tensor:
+        """
+        Compute exemplar-style regularisation losses.
+
+        1. **Curvature matching** — penalise the MSE between the
+           surface-weighted curvature mean of ``x_start`` and the target.
+        2. **Depth cap** — penalise interior SDF values whose magnitude
+           exceeds the exemplar's deepest point, discouraging over-inflation.
+
+        Parameters
+        ----------
+        x_start : Tensor [B, N, C]
+            Predicted clean sample (normalised diffusion space).
+        neighbors : Tensor [N, K]
+            Neighbour table passed from the DDPM training loop.
+        kwargs : dict
+            Extra keyword arguments (unused; accepted for interface compatibility).
+
+        Returns
+        -------
+        Scalar Tensor.
+        """
+        dev = x_start.device
+        neigh = neighbors.to(dev)               # [N, K]
+
+        sdf = x_start[:, :, 0:1]               # [B, N, 1]
+        surface_weight = torch.exp(-sdf.abs() / 0.15)
+
+        lap  = _graph_laplacian(sdf, neigh)     # [B, N, 1]
+        pred_curv = (lap * surface_weight)      # [B, N, 1]
+
+        # Curvature mean MSE against target
+        pred_mean = pred_curv.mean()
+        target_mean = torch.tensor(
+            self.target_mean_curvature, dtype=x_start.dtype, device=dev
+        )
+        curv_loss = torch.nn.functional.mse_loss(pred_mean, target_mean)
+
+        # Depth cap: penalise interior vertices that are deeper than exemplar
+        sdf_vals = x_start[:, :, 0]            # [B, N]
+        interior_excess = (-sdf_vals - self.target_max_depth).clamp(min=0.0)
+        depth_loss = interior_excess.pow(2).mean()
+
+        return curv_loss + depth_loss
+
+
+# ---------------------------------------------------------------------------
+# OrganelleLossRegistry — plugin registry for custom bio losses
+# ---------------------------------------------------------------------------
+
+class OrganelleLossRegistry:
+    """
+    A lightweight registry that maps organelle names to lists of custom
+    loss modules (callables).  The baseline Laplacian + curvature losses are
+    always evaluated regardless of the registered custom losses.
+
+    Usage
+    -----
+    ::
+
+        organelle_loss_registry.register_loss("mito", my_mito_loss_fn)
+        bio = organelle_loss_registry.compute_loss(
+            "mito", x_start, neighbors, surface_softness=0.1
+        )
+    """
+
+    def __init__(self) -> None:
+        self._registry: Dict[str, List[Callable]] = {}
+
+    # ------------------------------------------------------------------
+    def register_loss(self, organelle_name: str, loss_fn: Callable) -> None:
+        """
+        Register a custom loss callable for a given organelle name.
+
+        Multiple callables may be registered for the same name; they are
+        accumulated in order.
+
+        Parameters
+        ----------
+        organelle_name : str
+            Arbitrary tag used as a key (e.g. ``"exemplar"``, ``"mito"``).
+        loss_fn : Callable
+            Must accept ``(x_start, neighbors, kwargs) -> Scalar Tensor``.
+        """
+        self._registry.setdefault(organelle_name, []).append(loss_fn)
+
+    # ------------------------------------------------------------------
+    def compute_loss(
+        self,
+        organelle_name: str,
+        x_start: Tensor,
+        neighbors: Tensor,
+        **kwargs,
+    ) -> Tensor:
+        """
+        Compute the combined biological loss for one training step.
+
+        Always includes the baseline Laplacian-displacement and
+        mean-curvature losses.  If ``organelle_name`` has registered
+        custom callables, their outputs are accumulated on top.
+
+        Parameters
+        ----------
+        organelle_name : str
+            Key to look up in the registry.
+        x_start : Tensor [B, N, C]
+            Predicted clean sample.
+        neighbors : Tensor [N, K]
+            Graph neighbour table.
+        **kwargs
+            Forwarded to both the baseline helper and custom callables.
+            Recognised keys: ``surface_softness``, ``edge_lengths``,
+            ``eikonal_weight``.
+
+        Returns
+        -------
+        Scalar Tensor.
+        """
+        surface_softness = kwargs.get("surface_softness", 0.15)
+        edge_lengths      = kwargs.get("edge_lengths", None)
+        eikonal_weight    = kwargs.get("eikonal_weight", 0.0)
+
+        # ── Baseline losses (always active) ─────────────────────────────
+        total = laplacian_displacement_loss(x_start, neighbors)
+        total = total + mean_curvature_loss(
+            x_start, neighbors, surface_softness=surface_softness
+        )
+
+        if eikonal_weight > 0.0 and edge_lengths is not None:
+            total = total + eikonal_weight * eikonal_loss(
+                x_start, neighbors, edge_lengths
+            )
+
+        # ── Custom registered losses ─────────────────────────────────────
+        for loss_fn in self._registry.get(organelle_name, []):
+            total = total + loss_fn(x_start, neighbors, kwargs)
+
+        return total
+
+
+# ---------------------------------------------------------------------------
+# Global singleton registry — imported and used by DDPM.py and main.py
+# ---------------------------------------------------------------------------
+
+organelle_loss_registry = OrganelleLossRegistry()
