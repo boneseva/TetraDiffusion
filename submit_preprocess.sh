@@ -44,7 +44,7 @@
 #SBATCH --job-name=tetradiff_preproc
 #SBATCH --output=/shared/home/eva.bones/TetraDiffusion/logs/slurm_preproc_%A_%a_%x.out
 #SBATCH --error=/shared/home/eva.bones/TetraDiffusion/logs/slurm_preproc_%A_%a_%x.err
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:H100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
