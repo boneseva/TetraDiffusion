@@ -104,7 +104,12 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def _load_tet_vertices(grid_res: int) -> np.ndarray:
-    """Load and zero-centre the coarsest-resolution tetrahedral vertices.
+    """Load and zero-centre the finest-resolution tetrahedral vertices.
+
+    Files inside ``tetrahedra/{grid_res}/`` are named ``{res}_tets.npz``
+    (e.g. ``128_tets.npz``), matching the ``MeshLoader`` convention where
+    ``cube_range`` lists the actual resolution integers and the last entry
+    is the finest grid.
 
     Replicates the MeshLoader initialisation:
         vertices[i] = vertices[i] - mean(vertices[i], axis=0)
@@ -113,7 +118,7 @@ def _load_tet_vertices(grid_res: int) -> np.ndarray:
     -------
     np.ndarray  [N, 3]  float32  — zero-centred vertex positions.
     """
-    tet_path = os.path.join("tetrahedra", str(grid_res), "0_tets.npz")
+    tet_path = os.path.join("tetrahedra", str(grid_res), f"{grid_res}_tets.npz")
     if not os.path.isfile(tet_path):
         sys.exit(
             f"[make_exemplar] ERROR: tetrahedral grid file not found: {tet_path}\n"
