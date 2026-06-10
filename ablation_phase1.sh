@@ -105,7 +105,7 @@ echo "  [4/8]  Regular DB / Lysosome / Bio OFF"
 # ── UroCell — Mitochondria ───────────────────────────────────
 echo ""
 echo "  [5/8]  UroCell / Mitochondria / Bio ON"
-# submit "urocell_mito_bio_on" \
+submit "urocell_mito_bio_on" \
     --urocell \
     --category mito
 
