@@ -1,0 +1,9 @@
+# TetraDiffusion Visualization — Extra Dependencies
+# These are in addition to the main environment.yaml
+# Install with:  pip install -r visualization/requirements.txt
+
+gradio>=4.20.0
+plotly>=5.20.0
+scikit-image>=0.21.0   # marching_cubes for demo mode
+scipy>=1.11.0          # RegularGridInterpolator for demo SDF interpolation
+trimesh>=4.0.0         # mesh export (already in main requirements)

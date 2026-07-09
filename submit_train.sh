@@ -113,12 +113,6 @@ DATA_PATH="${DATA_PATH:-${REPO_DIR}/data/preprocessed}"
 CSV_PATH="${CSV_PATH:-${REPO_DIR}/lib/all.csv}"
 WANDB_PROJECT="TetraDiffusion"
 
-# ─── Rename SLURM job to include the category (not possible in #SBATCH lines) ─
-# This makes "squeue" show e.g. "tetradiff_Mitochondria" instead of "tetradiff".
-if [ -n "${SLURM_JOB_ID:-}" ]; then
-    scontrol update JobId="${SLURM_JOB_ID}" JobName="tetradiff_${CATEGORY}" || true
-fi
-
 # Build optional resume flag forwarded to main.py
 RESUME_FLAG=()
 [ "$RESUME" = true ] && RESUME_FLAG=(--resume)
@@ -136,26 +130,20 @@ export WANDB_MODE=online
 export WANDB_DIR="${REPO_DIR}"          # wandb will create ${REPO_DIR}/wandb/ here (no nesting)
 export TORCHDYNAMO_DISABLE=1
 
+# Create required directories before srun so wandb/logging can write on startup.
 mkdir -p "${REPO_DIR}/logs" "${REPO_DIR}/wandb" "${REPO_DIR}/runs" || true
 
-# ─── Print job info ────────────────────────────────────────────────────────────
+# ─── Minimal pre-launch banner (keep overhead before srun negligible) ──────────
 echo "================================================"
-echo "Job ID       : ${SLURM_JOB_ID:-local}"
-echo "Node         : $(hostname)"
-echo "GPUs         : $(echo ${CUDA_VISIBLE_DEVICES:-all})"
-echo "Category     : ${CATEGORIES[*]}"
-echo "Run name     : $RUN_NAME"
-echo "Data path    : $DATA_PATH"
-echo "Multi-GPU    : $MULTI_GPU"
-echo "Resume       : $RESUME"
-echo "Repo dir     : $REPO_DIR"
-echo "Date         : $(date)"
+echo "Job ${SLURM_JOB_ID:-local} | category=${CATEGORIES[*]} | run=${RUN_NAME} | multi_gpu=${MULTI_GPU} | resume=${RESUME}"
+echo "Launch: $(date)"
 echo "================================================"
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 
 # ─── Launch ───────────────────────────────────────────────────────────────────
+# GPU count: prefer the SLURM env var (zero overhead) and fall back to
+# nvidia-smi only if it is missing (e.g. interactive / non-GPU nodes).
 if [ "$MULTI_GPU" = true ]; then
-    NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
+    NUM_GPUS="${SLURM_GPUS_ON_NODE:-$(nvidia-smi --list-gpus | wc -l)}"
     echo "Launching multi-GPU training on $NUM_GPUS GPUs"
     srun $PYXIS_FLAGS accelerate launch \
         --multi_gpu \
@@ -187,7 +175,18 @@ else
         "${EXTRA_ARGS[@]}"
 fi
 
+# ─── Post-run diagnostics (run after GPU is released — zero walltime cost) ────
 echo "================================================"
 echo "Training finished: $(date)"
+echo "Job ID       : ${SLURM_JOB_ID:-local}"
+echo "Node         : $(hostname)"
+echo "GPUs         : ${CUDA_VISIBLE_DEVICES:-all}"
+echo "Category     : ${CATEGORIES[*]}"
+echo "Run name     : $RUN_NAME"
+echo "Data path    : $DATA_PATH"
+echo "Multi-GPU    : $MULTI_GPU"
+echo "Resume       : $RESUME"
+echo "Repo dir     : $REPO_DIR"
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
 echo "================================================"
 

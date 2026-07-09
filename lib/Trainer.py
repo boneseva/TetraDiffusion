@@ -58,7 +58,7 @@ class Trainer(object):
         if os.path.exists(wandb_id_file):
             with open(wandb_id_file) as f:
                 wandb_id = f.read().strip()
-            wandb_resume = "must"
+            wandb_resume = "allow"
 
         run = wandb.init(
             project=getattr(cfg, 'wandb_project', 'TetraDiffusion'),

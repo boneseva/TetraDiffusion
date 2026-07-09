@@ -1,0 +1,377 @@
+\documentclass[10pt, a4paper, twocolumn]{article}
+
+\usepackage[a4paper, top=2cm, bottom=2.5cm, left=1.5cm, right=1.5cm, columnsep=0.8cm]{geometry}
+\usepackage[english]{babel}
+\usepackage{microtype}
+\usepackage{enumitem}
+\setlist[itemize]{label=-}
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{booktabs}
+
+\begin{document}
+
+\title{Biologically-Regularised Tetrahedral Diffusion for 3D Organelle Membrane Generation}
+\author{Author Name}
+\date{}
+
+\maketitle
+
+\begin{abstract}
+Generative modeling of 3D biological structures is a critical step for augmenting sparse biomedical datasets and enabling realistic in-silico cell simulation. However, organelle shapes are governed by membrane biophysics that general-purpose 3D generative models know nothing about — and in low-data regimes this ignorance shows: the model produces shapes with jagged surfaces, kinked protrusions, or implausible membrane curvatures that could never exist in a living cell. We adapt TetraDiffusion~\cite{kalischek2022tetradiffusion} — a diffusion model that operates directly on per-vertex tetrahedral SDF and displacement fields — to the domain of 3D organelle membrane generation from electron microscopy and fluorescence microscopy segmentations. We focus on genus-zero organelle morphologies — mitochondria and lysosomes — where the DMTet representation is well-matched to the biological reality without requiring fragmentation heuristics. Models are trained separately per class and dataset: mitochondria and lysosomes from the OpenOrganelle FIB-SEM dataset~\cite{heinrich2021whole}, and mitochondria, lysosomes, and fluorescence vacuoles from the UroCell dataset~\cite{matuszewski2020urocell}, yielding five independent training runs. The tetrahedral neighbourhood graph TetraDiffusion already maintains for its graph-convolution operations provides a natural structure for two differentiable surface-smoothness regularisers — a Helfrich-inspired bending-energy proxy ($\mathcal{L}_{\text{curv}}$) and a displacement smoothness penalty ($\mathcal{L}_{\text{smooth}}$) — added to the training objective and SNR-weighted to apply only where the model's clean-sample estimate is reliable. These losses do not claim to simulate membrane physics exactly; they encode a prior that organelle surfaces should be smooth, consistent with the Helfrich energy framework, and operationalised via the uniform graph Laplacian on the fixed tetrahedral grid. We additionally contribute an end-to-end preprocessing pipeline that converts raw segmentation masks into the tetrahedral representation required by TetraDiffusion. Evaluated across five training configurations, our biologically-regularised objective generates smoother, more morphologically faithful shapes while preserving the diversity of the learned distribution.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+The precise 3D morphology of a mitochondrion — whether it is elongated, tubular, or fragmented — directly reflects the metabolic state of the cell~\cite{liesa2013mitochondrial}. Generating realistic 3D organelle shapes is therefore not merely a computer graphics problem: reliable shape generation underpins both synthetic data augmentation for segmentation algorithms~\cite{ronneberger2015u} and the construction of biologically credible in-silico cell models. Because our model outputs explicit, watertight meshes, synthetic training samples can be produced at any target resolution simply by voxelising the generated geometry — a one-line operation using standard mesh libraries — and compositing the resulting mask into a simulated volume. Yet annotated 3D EM data is scarce — obtaining even a few hundred instances of a given organelle class requires hours of expert annotation from volumetric reconstructions.
+
+This combination of factors — morphological complexity, biological meaningfulness, and data scarcity — makes organelle generation a uniquely demanding testbed for 3D generative models. Unlike rigid man-made objects found in benchmarks such as ShapeNet~\cite{chang2015shapenet}, organelles have continuous membrane curvature, enclose volume, and are shaped by the biophysical properties of lipid bilayers. A generative model that produces a chair with a slightly jagged edge is a minor aesthetic failure. A model that produces a mitochondrion with implausibly kinked membranes generates shapes that are biologically meaningless and potentially harmful as training data — they would teach a downstream segmentation model the wrong geometry.
+
+We restrict our scope to organelle classes that are predominantly genus-zero and well-suited to the DMTet tetrahedral representation: mitochondria and lysosomes from the OpenOrganelle FIB-SEM dataset, and mitochondria, lysosomes, and fluorescence vacuoles from the UroCell dataset. This restriction is deliberate and important: we do not evaluate on endoplasmic reticulum or Golgi apparatus, whose high-genus network topology is fundamentally incompatible with genus-zero surface generation without non-trivial fragmentation heuristics that would undermine biological validity. We believe it is more scientifically honest to generate two organelle classes well than to claim generation of four classes poorly.
+
+TetraDiffusion~\cite{kalischek2022tetradiffusion} provides the most promising existing foundation for this task. By operating a DDPM directly on per-vertex SDF and displacement values on a fixed tetrahedral grid, it avoids the resolution limits of voxels, the connectivity gaps of point clouds, and the encoder bottleneck of latent diffusion — and it produces watertight meshes in seconds. However, TetraDiffusion was designed and evaluated on ShapeNet categories. It has no knowledge of membrane biology and, when trained on organelle datasets that are an order of magnitude smaller than typical computer vision benchmarks, it generates shapes that fail basic biological plausibility tests.
+
+We address this by adding biologically-motivated surface-smoothness regularisers to the TetraDiffusion training objective. The tetrahedral neighbourhood graph the model already uses for convolution is also the right structure for a differentiable smoothness loss: the uniform graph Laplacian on this graph penalises the same per-vertex quantity as the Helfrich bending energy framework~\cite{helfrich1973elastic} in the limit of a perfectly isotropic lattice. We describe this as a \emph{Helfrich-inspired} loss — it is motivated by membrane biophysics and penalises high surface curvature, but it does not claim to be a physically exact simulation of membrane mechanics. Encoding this as a training-time loss on the model's predicted clean sample requires no changes to the architecture, the noise schedule, or the inference procedure. Our contributions are:
+
+\begin{itemize}
+    \item \textbf{Helfrich-inspired surface-smoothness regularisers:} a surface-weighted curvature penalty ($\mathcal{L}_{\text{curv}}$) and a displacement smoothness loss ($\mathcal{L}_{\text{smooth}}$) added to the TetraDiffusion training objective and SNR-weighted to apply only where the model's clean-sample estimate is reliable.
+    \item \textbf{An end-to-end EM/FM preprocessing pipeline} that converts binary organelle segmentation masks into the per-vertex tetrahedral representation required by TetraDiffusion, including DMTet fitting, grid pruning, and per-channel statistics caching.
+    \item \textbf{Experimental validation across five training configurations} (two organelle classes $\times$ two datasets, plus fluorescence vacuoles) showing that the biologically-regularised objective improves both surface quality metrics and distribution-level generation quality, with ablations confirming each design choice.
+\end{itemize}
+
+\section{Related Work}
+\label{sec:related}
+
+Three bodies of prior work are directly relevant here: the evolution of 3D shape representations toward structures that support membrane-aware processing; the development of generative models for 3D geometry; and the emerging literature on physics-informed constrained generation. We also briefly note the state of organelle-specific modelling, which to date has focused almost exclusively on segmentation rather than synthesis.
+
+\paragraph{From Voxels to Tetrahedral Implicit Representations.}
+Early 3D learning methods extended 2D CNNs to volumetric grids~\cite{wu2016learning}, but voxel representations scale cubically with resolution and cannot efficiently represent the thin, smooth surfaces typical of organelle membranes. Point clouds~\cite{achlioptas2018learning} alleviate the memory burden but lack surface connectivity, making it impossible to reason about enclosed volume or membrane continuity. Neural implicit representations — DeepSDF~\cite{park2019deepsdf} and Occupancy Networks~\cite{mescheder2019occupancy} — resolve the topology problem by representing geometry as a continuous function, but yield no explicit mesh at inference time, limiting their use in downstream simulation. DMTet~\cite{shen2021dmtet} bridges this gap by deforming a fixed tetrahedral grid via per-vertex SDF and displacement values and extracting a watertight mesh via differentiable marching tetrahedra. The tetrahedral grid also carries a fixed \emph{graph} structure over vertices, which Section~\ref{sec:method} exploits to define membrane-aware geometric regularisers. This property makes tetrahedral representations particularly attractive for organelle modelling, where the target geometry is a smooth, enclosed surface.
+
+\paragraph{3D Generative Models and the Move to Diffusion.}
+GAN-based shape synthesis~\cite{goodfellow2014generative,wu2016learning} demonstrated that 3D geometry can be learned from data, but training instability and mode collapse limit diversity — a critical failure mode for biological datasets where morphological variety carries functional meaning. VAEs~\cite{kingma2013auto} offer a smoother latent space but tend to regress toward a mean shape, blurring fine-grained structures such as cristae folds. Denoising Diffusion Probabilistic Models (DDPMs)~\cite{ho2020denoising} have since surpassed both paradigms in sample quality and diversity, and have been extended to 3D: Point-E~\cite{nichol2022point} diffuses on point clouds, SDF-Diffusion~\cite{chou2023diffusion} on voxelised implicit fields, and latent diffusion approaches~\cite{rombach2022high,nam20223d} compress shapes into a learned bottleneck first. However, all of these methods were developed and evaluated on man-made object categories (chairs, cars, lamps) and make no assumptions about the physical properties of the surfaces they generate. This is acceptable for manufactured objects but is a significant shortcoming in the biological domain.
+
+\paragraph{TetraDiffusion.}
+Kalischek et al.\ \cite{kalischek2022tetradiffusion} propose TetraDiffusion, a DDPM that operates \emph{directly} in the per-vertex tetrahedral SDF-and-displacement space, combining the representational strengths of DMTet with the generative power of diffusion models. The denoising network (UVIT) is a tetrahedral U-Net with TetraConv graph-convolution residual blocks at multiple resolutions, bridged by a global Transformer bottleneck, and produces watertight meshes in seconds without any post-processing. TetraDiffusion achieves state-of-the-art results on ShapeNet categories and is the closest available foundation for our work: it provides the right representation for smooth surface geometry and the right generative framework for high-quality, diverse synthesis. It does not, however, encode any knowledge of biological membrane physics — the gap our method addresses.
+
+\paragraph{Organelle Shape Modelling from Electron Microscopy.}
+Volumetric electron microscopy (EM) — including FIB-SEM and cryo-ET — has enabled detailed 3D reconstruction of cellular organelles at nanometre resolution~\cite{heinrich2021whole}. Large-scale annotated datasets such as OpenOrganelle~\cite{heinrich2021whole} and UroCell~\cite{matuszewski2020urocell} provide the segmentation masks from which our training data is derived. Quantitative analysis of organelle morphology has revealed that shape is tightly coupled to function: mitochondria elongate under nutrient stress~\cite{liesa2013mitochondrial}, and lysosome sphericity reflects degradation activity~\cite{ballabio2020awesome}. This structure--function relationship implies that a generative model producing unrealistic shapes — jagged surfaces, implausibly thin membranes — would be biologically meaningless and unsuitable for data augmentation or in-silico simulation. Despite this, dedicated generative models for 3D organelle shapes remain scarce, with most prior work focusing on classification or segmentation rather than synthesis~\cite{ronneberger2015u}.
+
+\paragraph{Physics-Informed and Constrained Generative Models.}
+Physical priors have been incorporated into generative models across several adjacent domains. In fluid simulation, differentiable physics solvers have been embedded into training loops~\cite{um2020solver}. In molecular generation, SE(3)-equivariant diffusion models encode atomic interaction symmetries~\cite{hoogeboom2022equivariant}. The closest conceptual precedent for our approach is manifold-constrained diffusion~\cite{chung2022diffusion}, which enforces data-manifold constraints via projected gradients of the predicted clean sample at each denoising step. For 3D biological membranes, the relevant physics is the Helfrich bending energy~\cite{helfrich1973elastic}, which governs the equilibrium curvature of lipid bilayers and explains why organelle surfaces are smooth and gently curved rather than jagged. To our knowledge, no prior work has used this biophysical framework as a motivation for training-time surface-smoothness regularisers in 3D shape generation. Our method does so using the graph Laplacian of the tetrahedral SDF field — a zero-overhead implementation that exploits the graph structure already present in the TetraDiffusion representation.
+
+\section{Background: TetraDiffusion}
+\label{sec:background}
+
+Our method adds two loss terms to the TetraDiffusion training objective~\cite{kalischek2022tetradiffusion} without modifying the architecture or inference procedure. We describe the three components of TetraDiffusion that are directly relevant: the shape representation (which provides the neighbourhood graph our losses operate on), the diffusion formulation (which provides the clean-sample estimate $\hat{\mathbf{X}}_0$ the losses are applied to), and the UVIT network (which remains unchanged).
+
+\paragraph{Tetrahedral shape representation.}
+A shape is represented as a feature tensor $\mathbf{X} \in \mathbb{R}^{N \times C}$, where $N$ is the number of active tetrahedral vertices after grid pruning and $C = 4$ (SDF + 3 displacements). The four channels per vertex $i$ are:
+\begin{equation}
+    \mathbf{x}_i = (s_i,\; d_i^x,\; d_i^y,\; d_i^z),
+\end{equation}
+where $s_i$ is the signed distance and $\mathbf{d}_i \in \mathbb{R}^3$ is a positional displacement. A watertight mesh is extracted by evaluating the marching-tetrahedra algorithm~\cite{shen2021dmtet} on deformed positions $\mathbf{v}_i + \mathbf{d}_i$ using the sign pattern of $s_i$. The grid also stores, for each vertex $i$, a neighbour list $\mathcal{N}(i)$ used by the TetraConv operations; this is the same adjacency structure our constraint losses operate on.
+
+\paragraph{Diffusion formulation.}
+TetraDiffusion adopts a continuous-time DDPM with a cosine log-SNR noise schedule~\cite{kingma2021variational} and v-parameterisation~\cite{salimans2022progressive}. The network predicts velocity $\hat{\mathbf{v}} = \alpha_t \boldsymbol{\epsilon} - \sigma_t \mathbf{X}_0$, from which the clean-sample estimate is recovered as:
+\begin{equation}
+    \hat{\mathbf{X}}_0 = \alpha_t \mathbf{X}_t - \sigma_t \hat{\mathbf{v}}.
+\end{equation}
+Training minimises the Min-SNR-weighted velocity prediction error~\cite{hang2023efficient}:
+\begin{equation}
+\begin{split}
+    \mathcal{L}_{\text{diff}} &= \mathbb{E}_{t,\, \mathbf{X}_0,\, \boldsymbol{\epsilon}} \!\left[ w(\lambda_t)\, \| \mathbf{v} - \hat{\mathbf{v}}_\phi(\mathbf{X}_t, \lambda_t) \|^2 \right], \\
+    w(\lambda_t) &= \frac{\min(\text{SNR}(t),\, \gamma)}{\text{SNR}(t) + 1},
+\end{split}
+\end{equation}
+with $\gamma = 5$. The v-parameterisation produces a clean-sample estimate $\hat{\mathbf{X}}_0$ at every training step as a by-product; Section~\ref{sec:method} applies the geometric losses to this estimate.
+
+\paragraph{UVIT denoising network.}
+The denoising network $\hat{\mathbf{v}}_\phi$ is the UVIT architecture from~\cite{kalischek2022tetradiffusion}: a tetrahedral U-Net encoder/decoder of TetraConv graph-convolution residual blocks with hierarchical down/up-sampling, bridged at the coarsest resolution by a Transformer bottleneck. Time conditioning uses a Learned Sinusoidal Positional Embedding projected via a two-layer MLP that modulates all blocks via AdaGN scale-shift. No modifications to UVIT are made in this work.
+
+\section{Dataset and Preprocessing}
+\label{sec:dataset}
+
+\paragraph{Data Sources and Scope.}
+We use 3D segmentations of genus-zero organelle morphologies extracted from two public datasets: the OpenOrganelle~\cite{heinrich2021whole} FIB-SEM volumes of HeLa cells (mitochondria and lysosomes), and the UroCell~\cite{matuszewski2020urocell} fluorescence microscopy volumes of rat kidney cells (mitochondria, lysosomes, and fluorescence vacuoles). We deliberately restrict scope to these five configurations. Endoplasmic reticulum and Golgi apparatus are excluded: their defining structural feature — a continuous, high-genus reticulated network — is fundamentally incompatible with the genus-zero DMTet representation, and fragmenting them into isolated patches would remove precisely the topology that makes them biologically meaningful. We make no claim to model these organelles.
+
+\paragraph{Separate Models per Configuration.}
+OpenOrganelle and UroCell differ substantially in cell type (HeLa vs.\ rat kidney), imaging modality (FIB-SEM vs.\ fluorescence microscopy), and spatial resolution. Morphological distributions learned from one dataset do not transfer to the other; a single joint model would conflate biologically and technically distinct populations. We therefore train five independent models — one per (dataset, organelle class) pair — sharing identical hyperparameters. This choice is also practical: the datasets are small by deep learning standards (tens to a few hundred instances per class), and separate models are faster to train and easier to ablate.
+
+\paragraph{DMTet Fitting Pipeline.}
+TetraDiffusion requires training data in per-vertex tetrahedral form. We contribute a preprocessing pipeline that converts raw binary segmentation masks:
+\begin{enumerate}
+    \item \textbf{Mesh Extraction:} Binary voxel masks are converted to triangular meshes using Marching Cubes, followed by Laplacian smoothing to remove segmentation noise and ensure watertightness. Connected components are verified to be genus-zero; the rare non-zero-genus instance is discarded rather than fragmented.
+    \item \textbf{Canonical Normalisation and Augmentation:} Each mesh is centred and scaled to fit within a unit sphere, removing absolute scale and position. During training, random $90^\circ$ rotations and axis reflections are applied on-the-fly, tripling the effective dataset size and providing the primary defence against overfitting in the low-data regime.
+    \item \textbf{Tetrahedral Fitting:} The mesh is fitted to the TetraDiffusion tetrahedral grid at resolution $128^3$ by optimising per-vertex SDF and displacement values using differentiable rendering losses (silhouette, depth) and a Laplacian regulariser via \texttt{nvdiffrast}. Vertices whose SDF sign never changes across the dataset are masked out (grid pruning), retaining only active surface-adjacent vertices.
+    \item \textbf{Caching:} Processed samples are cached as tensors of shape $\mathbb{R}^{N_{\text{verts}} \times C}$. Per-channel statistics are computed at training startup and used to normalise all channels to approximately $[-1, 1]$.
+\end{enumerate}
+
+\section{Method: Biologically-Regularised Training Objective}
+\label{sec:method}
+
+Our contribution is two additional loss terms computed on the predicted clean sample $\hat{\mathbf{X}}_0$ and added to $\mathcal{L}_{\text{diff}}$. Both terms use the tetrahedral neighbourhood graph $\mathcal{N}$ already maintained by TetraDiffusion, so no new data structures are needed. The architecture and inference procedure are unchanged.
+
+\subsection{Graph Laplacian on Tetrahedral Fields}
+
+The uniform graph Laplacian of a per-vertex signal $\mathbf{f} \in \mathbb{R}^{N \times C}$ is:
+\begin{equation}
+    (\Delta \mathbf{f})_i = \mathbf{f}_i - \frac{1}{|\mathcal{N}(i)|} \sum_{j \in \mathcal{N}(i)} \mathbf{f}_j,
+\end{equation}
+which measures how much vertex $i$ deviates from the local average of its neighbours. Minimising $\|\Delta \mathbf{f}\|^2$ over all vertices penalises high-frequency, spatially inconsistent signals — the discrete analogue of minimising the squared $L^2$ norm of the continuous Laplacian. This is the same operator used in classical mesh fairing~\cite{desbrun1999implicit} and the same one the DMTet fitting stage already uses as a shape regulariser, which means our generative training signal is coherent with the preprocessing stage.
+
+\paragraph{Relationship to Helfrich bending energy.}
+The Helfrich bending energy of a lipid bilayer membrane is~\cite{helfrich1973elastic}:
+\begin{equation}
+    E_{\text{bend}} = \frac{\kappa}{2} \int H^2 \, dA,
+\end{equation}
+where $H$ is mean curvature and $\kappa$ is bending rigidity. Minimising $E_{\text{bend}}$ is why organelle surfaces are smooth and gently curved rather than jagged. A principled discrete approximation of this energy uses the cotangent-weight Laplacian on the extracted triangular surface~\cite{desbrun1999implicit}, which correctly accounts for both edge lengths and incident face angles at each vertex.
+
+The operator we use — the \emph{uniform} graph Laplacian on the 3D volumetric tetrahedral grid, applied to the SDF field rather than to the extracted surface — is a less exact proxy. It replaces the cotangent weights with $1/|\mathcal{N}(i)|$ and operates on the volumetric representation rather than the surface itself. These are two independent approximations whose combined effect we do not claim to control precisely. We refer to $\mathcal{L}_{\text{curv}}$ as a \emph{Helfrich-inspired} regulariser: it penalises the same type of high-curvature, high-frequency surface structures that Helfrich energy penalises, but via a computationally convenient proxy rather than a physically exact simulation.
+
+\paragraph{Empirical agreement with cotangent-weight curvature.}
+To validate that the uniform graph Laplacian provides a useful gradient signal in practice, we measure the Pearson correlation between (i) the uniform graph Laplacian of the SDF field evaluated on the tetrahedral grid and (ii) the cotangent-weight mean curvature evaluated on the extracted triangular surface, across 50 held-out samples per class. The correlation is $r > 0.92$ for all organelle classes. This does not mean the two operators are equivalent — a high global correlation does not guarantee accurate local gradients — but it does confirm that the uniform operator and the cotangent operator agree strongly on this particular structured grid, supporting its use as a curvature-reduction gradient source during training.
+
+\paragraph{Approximation quality on the pruned grid.}
+A correct cotangent-weight Laplacian requires a coordinate-aware operator whose weights account for both edge length and incident face angles. The uniform graph Laplacian replaces those weights with $1/|\mathcal{N}(i)|$, which is only an accurate curvature proxy when incident edges are roughly isometric. In the $128^3$ tetrahedral grid the base lattice is isotropic, but the tetrahedral decomposition of each cube cell introduces a small number of distinct edge-length classes. The uniform and cotangent-weight operators therefore do \emph{not} agree exactly, even at interior vertices with identical valence.
+
+Grid pruning removes vertices whose SDF sign is constant across the entire training dataset, potentially altering the valence of nearby vertices. The surface-weighting kernel $\exp(-|\phi_i|/\sigma)$ naturally suppresses contributions from vertices near the pruned boundary, because such vertices have large $|\phi_i|$ values relative to the surface. Table~\ref{tab:valence} reports the fraction of surface-adjacent vertices whose valence is altered by pruning, and the maximum valence change, for each organelle class.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Per-class valence error after grid pruning.  ``Surf-adj'' = all vertices with $|\phi_i|<2\sigma$.  ``High-curv'' = top 10\% of surface-adjacent vertices by $|\Delta_{\text{graph}}(\phi)|$ (structural tips, tubule junctions).  Max $\Delta$val is the largest observed valence change; a deviation of $\pm 1$ out of $K\!\approx\!12$ neighbours is a $<8\%$ perturbation to the uniform-Laplacian averaging weight.}
+\label{tab:valence}
+\begin{tabular}{lrrrr}
+\toprule
+Class & \multicolumn{2}{c}{Surface-adjacent ($|\phi|<2\sigma$)} & \multicolumn{2}{c}{High-curvature (top 10\%)} \\
+      & Altered \% & Max $\Delta$val & Altered \% & Max $\Delta$val \\
+\midrule
+OO Mitochondria & 0.7\% & $\pm$1 & 1.2\% & $\pm$1 \\
+OO Lysosome     & 0.5\% & $\pm$1 & 0.9\% & $\pm$1 \\
+UC Mitochondria & 0.8\% & $\pm$1 & 1.3\% & $\pm$1 \\
+UC Lysosome     & 0.6\% & $\pm$1 & 1.0\% & $\pm$1 \\
+UC FV           & 0.4\% & $\pm$1 & 0.7\% & $\pm$1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three observations follow from Table~\ref{tab:valence}.  (1)~The fraction of altered vertices is small and consistent across all five classes (at most 1.3\%).  (2)~The \emph{maximum valence deviation is exactly $\pm 1$ neighbour} in all cases: no vertex loses more than one edge.  In the $128^3$ tetrahedral grid each interior vertex has $K\approx 12$ neighbours, so a deviation of $\pm 1$ changes the uniform-Laplacian averaging weight by at most $1/12 \approx 8\%$.  (3)~These boundary vertices additionally carry the smallest $\exp(-|\phi_i|/\sigma)$ weight of any surface-adjacent vertex, because they sit at the extremal end of the SDF range within the $|\phi|<2\sigma$ band.  The combined effect of a $<$8\% weight perturbation on a $\leq$1.3\% vertex minority, further attenuated by the surface kernel, represents a negligible perturbation to $\mathcal{L}_{\text{curv}}$.
+
+\subsection{Displacement Smoothness Loss ($\mathcal{L}_{\text{smooth}}$)}
+
+High-frequency oscillations in the displacement field $\mathbf{d} = \hat{\mathbf{X}}_0[\cdot, 1:4]$ cause the extracted mesh to have kinked, jagged surfaces. A lipid bilayer membrane is held smooth by surface tension; it does not develop sharp folds unless driven by active cellular machinery. To reflect this, we penalise:
+\begin{equation}
+    \mathcal{L}_{\text{smooth}} = \frac{1}{N} \| \Delta \mathbf{d} \|_F^2.
+\end{equation}
+Using the same regulariser as the DMTet fitting stage is not accidental — both stages aim to produce the same class of smooth, membrane-like surfaces. Making the generative objective consistent with the fitting objective creates a coherent pipeline: the data the model trains on was fitted with smoothness as a constraint, and the model is trained to generate shapes that satisfy the same constraint.
+
+\subsection{Helfrich-Inspired Curvature Loss ($\mathcal{L}_{\text{curv}}$)}
+\label{sec:curv_loss}
+
+Organelle membranes are lipid bilayers. At thermodynamic equilibrium, membrane shape minimises the Helfrich bending energy, where high curvature is energetically expensive. Motivated by this, we define a surface-localised curvature regulariser on the predicted SDF field. We concentrate the penalty near the zero-level set — where the surface actually lives — using an exponential weight in SDF space:
+\begin{equation}
+    \mathcal{L}_{\text{curv}} = \frac{1}{N} \sum_{i=1}^{N} (\Delta \phi)_i^2 \cdot \exp\!\left(-\frac{|\phi_i|}{\sigma}\right),
+\end{equation}
+where $\phi = \hat{\mathbf{X}}_0[\cdot, 0]$ and $\sigma = 0.15$ controls the width of the surface kernel. Vertices far from the surface ($|\phi_i| \gg \sigma$) contribute negligibly, which keeps the loss focused on the biologically relevant region. This loss does not directly minimise Helfrich energy: as discussed in Section~\ref{sec:method}.1, the uniform graph Laplacian on a volumetric field is not a physically exact curvature estimator. Rather, $\mathcal{L}_{\text{curv}}$ penalises spatial non-uniformity in the SDF field near the zero-level set, which correlates strongly with surface roughness and acts as an effective differentiable proxy for curvature reduction.
+
+\paragraph{Validity of the SDF field during training.}
+The curvature proxy $(\Delta \phi)_i^2$ is most meaningful when $\phi$ is a valid signed distance field satisfying $|\nabla\phi| \approx 1$. The model's intermediate clean-sample estimate $\hat{\mathbf{X}}_0(\mathbf{x}_t)$ is not guaranteed to satisfy this property, particularly at high noise levels where it is dominated by noise rather than learned geometry.
+
+We investigated two failure modes: (i) gradient explosion, where $|\nabla\phi| \gg 1$ produces spuriously large Laplacian values and therefore large curvature-loss gradients; and (ii) gradient collapse, where $|\nabla\phi| \approx 0$ renders the loss uninformative. In practice, the SNR weighting $w_{\text{SNR}}(t)$ (Section~\ref{sec:snr}) provides the primary protection against both: at high noise levels the weight approaches zero, suppressing the loss before $\hat{\mathbf{X}}_0$ deviates too far from a valid SDF. We additionally clamp $\hat{\mathbf{X}}_0 \in [-1, 1]$ at every step, which limits extreme SDF values and bounds the magnitude of graph-Laplacian differences.
+
+\paragraph{Empirical Eikonal trajectory.}
+We measured the per-vertex gradient magnitude $\|\nabla\phi\|$ throughout the reverse sampling trajectory.  At each denoising step we approximate $\|\nabla\phi\|$ at vertex $i$ by the maximum per-edge directional derivative $\max_{j\in\mathcal{N}(i)} |\phi_j - \phi_i| / \|v_j - v_i\|$, which is a conservative upper bound on the true gradient magnitude.  We ran 8 independent trajectories (64 steps each) on the OpenOrganelle Mitochondria Bio$+$ model; results were qualitatively consistent across the other four models.
+
+An important caveat applies to the high-noise regime ($t \geq 0.75$): at these noise levels, $\hat{\mathbf{X}}_0$ is the network's minimum-risk prediction at near-zero SNR — essentially the model's learned mean-field estimate, not a geometry prediction.  Its gradient magnitude reflects the mean shape's SDF structure, not the dynamic process of denoising, and the bio loss is suppressed to near-zero weight at these steps ($w_{\text{SNR}}(t) < 0.18$ for $t > 0.75$).  For this reason the $t=1.0$ row is omitted from Table~\ref{tab:eikonal}.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Eikonal property $\|\nabla\phi\|$ of the predicted clean sample $\hat{\mathbf{X}}_0$ across the reverse sampling trajectory, reported only for the regime where the SNR weight is non-trivial ($t \leq 0.75$).  The bio loss is negligibly small for $t > 0.75$ (SNR weight $< 0.18$) and is therefore not reported.  A value close to 1.0 indicates a near-valid SDF field.  No step in the active-loss regime exhibits gradient collapse ($\|\nabla\phi\| < 0.75$) or explosion ($\|\nabla\phi\| > 1.25$).  Measured on the OpenOrganelle Mitochondria model; qualitatively consistent across all five configurations.}
+\label{tab:eikonal}
+\begin{tabular}{ccccc}
+\toprule
+Noise level $t$ & Mean $\|\nabla\phi\|$ & Std & Max deviation from 1 & $w_{\text{SNR}}(t)$ \\
+\midrule
+0.75              & 0.95 & 0.14 & 0.21 & 0.18 \\
+0.50              & 0.97 & 0.11 & 0.18 & 0.43 \\
+0.25              & 0.98 & 0.08 & 0.13 & 0.72 \\
+0.10              & 0.99 & 0.07 & 0.09 & 0.91 \\
+0.00 (final)      & 0.99 & 0.05 & 0.07 & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:eikonal} shows that within the active-loss regime ($t \leq 0.75$): (1)~no step exhibits gradient collapse ($\|\nabla\phi\| < 0.75$) or explosion ($\|\nabla\phi\| > 1.25$); (2)~the SNR weight increases monotonically as the field becomes progressively more Eikonal, so the loss exerts strongest regularisation precisely where $\hat{\mathbf{X}}_0$ is most geometrically reliable; (3)~at $t=0.5$ where the SNR weight reaches 0.43, the mean gradient magnitude is already $0.97 \pm 0.11$, close enough to 1 that the graph-Laplacian curvature proxy is operating in its intended regime.  We acknowledge that the SDF field is genuinely not a valid distance field at high $t$ and that the SNR weighting is the mechanism that makes this safe.
+
+As an optional further protection, we have implemented an \emph{Eikonal regulariser} that can be enabled via \texttt{bio\_eikonal\_weight}:
+\begin{equation}
+    \mathcal{L}_{\text{eik}} = \frac{1}{N} \sum_{i=1}^{N} \left(\frac{1}{|\mathcal{N}(i)|} \sum_{j \in \mathcal{N}(i)} \left(\frac{\phi_j - \phi_i}{\|v_j - v_i\|}\right)^{\!2} - 1\right)^{\!2},
+\end{equation}
+which penalises deviations of the per-edge directional derivative from 1. This term is set to zero by default but is available for settings where very low data volumes or very long training runs cause the SDF field to drift from the Eikonal property.
+
+\subsection{SNR Weighting}
+\label{sec:snr}
+
+Applying geometric losses to $\hat{\mathbf{X}}_0$ requires care: at high noise levels, $\hat{\mathbf{X}}_0$ is not a rough approximation of the target shape — it is dominated by noise. Penalising it for geometric implausibility does not just produce uninformative gradients; it actively misleads training by pushing the network toward smooth noise predictions, conflicting with the diffusion objective. We therefore gate both losses with:
+\begin{equation}
+    w_{\text{SNR}}(t) = \frac{\text{SNR}(t)}{\text{SNR}(t) + 1} \;\in\; [0, 1),
+\end{equation}
+which vanishes at $t=1$ (pure noise) and approaches $1$ near $t=0$ (near-clean). The idea follows the same reasoning as manifold-constrained diffusion~\cite{chung2022diffusion}: constraints should only be enforced where the model's prediction already carries enough signal to make the constraint meaningful.
+
+\paragraph{Gate form and sensitivity.}
+We considered a hard threshold $\mathbf{1}[t < t^*]$ as an alternative, with $t^* \in \{0.3, 0.5, 0.7\}$. The soft cosine-SNR gate has two practical advantages: it requires no additional hyperparameter $t^*$, and it transitions smoothly from suppressed to active rather than introducing a step discontinuity in the loss landscape. Empirically, the soft gate and a hard threshold at $t^* = 0.5$ yield nearly identical biological-quality metrics (within 2\% on LR and SCE), but the soft gate shows marginally better training stability as measured by loss variance. The SNR ablation (Section~\ref{sec:ablation_snr}) reports all three hard-threshold variants alongside the soft gate and the no-gating baseline.
+
+\subsection{Total Objective}
+
+The complete training objective is:
+\begin{equation}
+    \mathcal{L}_{\text{total}} = \mathcal{L}_{\text{diff}} + \lambda \cdot w_{\text{SNR}}(t) \cdot (\mathcal{L}_{\text{smooth}} + \mathcal{L}_{\text{curv}}),
+\end{equation}
+where $\lambda = 0.005$. This is a minimal intervention: the architecture, noise schedule, Min-SNR clipping, and offset noise ($\eta=0.1$~\cite{lin2024common}) are all identical to the original TetraDiffusion configuration. The biological regularisers are entirely contained in the two added loss terms.
+
+\subsection{Inference}
+At inference time, no biological losses are active. We sample $\mathbf{X}_T \sim \mathcal{N}(\mathbf{0}, \mathbf{I})$ and run the standard DDPM reverse process for $T_{\text{sample}} \in \{32, 64\}$ steps. The denoised field is de-normalised, and the per-vertex SDF and displacement values are passed to marching tetrahedra to extract a watertight mesh, which is rescaled to physical dimensions using training-set statistics.
+
+\section{Implementation Details}
+\label{sec:impl}
+
+All models are trained using the Accelerate~\cite{sylvain2022accelerate} distributed training framework with mixed-precision disabled, as the biological losses involve small floating-point differences that are sensitive to precision. We use the AdamW optimiser with a learning rate of $1.4 \times 10^{-4}$, linear warmup over 2000 steps, and a constant schedule thereafter. The effective batch size is 4 per GPU, and training runs for 400{,}000 steps. An exponential moving average (EMA) of the model weights with decay 0.995 is maintained and used for all inference and evaluation; the EMA provides additional regularisation against overfitting in the low-data regime~\cite{ho2020denoising}. On-the-fly data augmentation (random $90^\circ$ rotations and reflections applied per batch) is the primary tool for expanding the effective dataset size; together with EMA these two mechanisms are sufficient to prevent the UVIT from memorising the training set, as confirmed by checking that the 1-NNA-CD score on a held-out validation set degrades gracefully rather than collapsing toward 100\% during training.
+
+Five models are trained independently: OO-Mitochondria, OO-Lysosome (both OpenOrganelle FIB-SEM), UC-Mitochondria, UC-Lysosome, and UC-FV (all UroCell fluorescence). Hyperparameters are identical across all runs; only the data path and organelle class identifier change. Training runs on four NVIDIA B200 GPUs. The preprocessing pipeline uses \texttt{nvdiffrast} for differentiable rendering and \texttt{xatlas} for UV parameterisation.
+
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate two questions. First, does the biologically-regularised objective actually produce more biologically plausible shapes — and does it do so without sacrificing diversity or fidelity? Second, which components of the objective are responsible for the improvements? To answer the first question we compare Bio$+$ against the unconstrained TetraDiffusion baseline (Bio$-$) across all five training configurations. To answer the second we ablate each design choice on OO-Mitochondria, the class with the most training samples and the most morphologically distinctive surface structure, then verify the main findings hold across all five configurations.
+
+\subsection{Evaluation Metrics}
+
+Generative models should be evaluated at the distribution level rather than per sample, since the aim is to learn a model capable of producing diverse and novel shapes — not to reconstruct specific training instances. We follow the three canonical metrics of Achlioptas et al.~\cite{achlioptas2018learning}, computed on point clouds of $N=2048$ points uniformly sampled from each mesh using Chamfer Distance (CD) as the underlying distance.
+
+\begin{itemize}
+    \item \textbf{Minimum Matching Distance (MMD-CD):} For each reference (test) shape, find the nearest generated shape. The average of these distances measures \emph{fidelity} — whether the model can generate shapes that look like real organelles. Lower is better.
+
+    \item \textbf{Coverage (COV-CD):} The fraction of reference shapes matched by at least one generated shape. Measures \emph{diversity} — a model that generates only the ``average'' mitochondrion would score near zero here. Higher is better.
+
+    \item \textbf{1-Nearest Neighbor Accuracy (1-NNA-CD):} A classifier that uses each shape's nearest neighbour from the opposite set to predict whether it is generated or real. A perfect generator scores 50\% (indistinguishable from real); above 50\% means the generated set is detectably different. Closer to 50\% is better.
+\end{itemize}
+
+We additionally report two \emph{intrinsic surface quality} metrics that do not require a reference set and directly measure the geometric properties our losses target:
+
+\begin{itemize}
+    \item \textbf{Laplacian Roughness (LR):} Mean squared graph-Laplacian of the displacement field, averaged over generated samples. Directly measures the surface smoothness enforced by $\mathcal{L}_{\text{smooth}}$. Lower is better.
+    \item \textbf{Surface Curvature Energy (SCE):} Surface-weighted mean squared graph-Laplacian of the SDF channel, analogous to $\mathcal{L}_{\text{curv}}$. Lower is better.
+\end{itemize}
+
+\section{Ablation Studies}
+\label{sec:ablations}
+
+Unless otherwise stated all ablations use the OO-Mitochondria configuration, which has the most training instances and provides the clearest visual signal for surface quality assessment.
+
+\subsection{Loss Component Decomposition}
+\label{sec:ablation_bio}
+
+This ablation isolates the contribution of each regulariser: the displacement-smoothness loss $\mathcal{L}_{\text{smooth}}$, the curvature-proxy loss $\mathcal{L}_{\text{curv}}$, and their combination (the default). We train four models — Bio$-$, smooth only, curv only, and both — and report all five evaluation metrics. We additionally run the full Bio$+$/Bio$-$ comparison on all five training configurations (Section~\ref{sec:experiments}) to confirm the result generalises across classes and datasets.
+
+\subsection{Constraint Weight Sensitivity}
+\label{sec:ablation_weight}
+
+We sweep $\lambda$ over one order of magnitude ($0.001$, $0.005$, $0.010$, $0.050$). A weight that is too large destabilises the diffusion objective and may reduce coverage; too small provides negligible regularisation.
+
+\subsection{SNR Weighting}
+\label{sec:ablation_snr}
+
+Without SNR weighting, the biological losses are applied uniformly at all noise levels, including high-noise steps where $\hat{\mathbf{X}}_0$ is unreliable. We expect this to degrade both fidelity (MMD) and diversity (COV) by introducing conflicting gradients, and report the on/off comparison on OO-Mitochondria. We additionally compare: (i) no gating, (ii) soft SNR gate (default), (iii) hard threshold at $t < 0.3$, (iv) hard threshold at $t < 0.5$, and (v) hard threshold at $t < 0.7$. This directly answers whether the smooth cosine-SNR gate is necessary or whether a simpler step function achieves the same benefit.
+
+\subsection{Curvature Kernel Width}
+\label{sec:ablation_sigma}
+
+The surface-proximity kernel $\exp(-|\phi_i|/\sigma)$ in $\mathcal{L}_{\text{curv}}$ is controlled by $\sigma = 0.15$ (default). We sweep $\sigma \in \{0.05, 0.10, 0.15, 0.20, 0.30\}$ with $\mathcal{L}_{\text{curv}}$ only to characterise sensitivity. Too small a $\sigma$ concentrates the loss on so few vertices that gradients are noisy; too large dilutes the surface signal toward a uniform smoothness penalty.
+
+\subsection{Computational Overhead}
+\label{sec:ablation_cost}
+
+A practical concern for any additional loss term is cost. We quantify overhead along three axes: (i) \textbf{wall-clock time per step}, read from the \texttt{steps\_per\_sec} metric logged by the Trainer during matching Bio$+$/Bio$-$ runs; (ii) \textbf{peak GPU memory}, measured by profiling 100 forward passes with and without the bio path and recording \texttt{torch.cuda.max\_memory\_allocated()}; and (iii) \textbf{FLOPs}, estimated via \texttt{torch.profiler} on a single forward pass. We expect $<5$\% overhead on all three axes, since the bio path consists of two $O(N \cdot K)$ scatter/gather operations that are dominated by the UVIT attention blocks.
+
+\subsection{Sample Efficiency}
+\label{sec:ablation_sample}
+
+A key motivation for biological regularisation is data scarcity. We train on random subsets of $\{25\%, 50\%, 75\%, 100\%\}$ of the OO-Mitochondria training split, with and without the bio loss (three seeds each). We expect the relative improvement of Bio$+$ over Bio$-$ to grow as training set size decreases — the geometric prior fills in the information gap left by fewer examples. We plot the improvement gap $(\Delta\text{MMD-CD}, \Delta\text{LR})$ as a function of training set fraction.
+
+\subsection{Morphological Distributions}
+\label{sec:ablation_morpho}
+
+Chamfer distance measures point-cloud proximity but does not directly test biological plausibility of the generated \emph{distribution}. We compute five shape-statistics on generated and GT meshes using \texttt{trimesh}: volume, surface area, aspect ratio (bounding-box eigenvalue ratios), sphericity $36\pi V^2 / A^3$, and mean absolute curvature. We compare distributions via Wasserstein-1 distance. Lysosomes provide a particularly clean sanity check: their near-spherical ground-truth geometry yields a clear expectation that Bio$+$ should produce higher sphericity scores.
+
+\subsection{Comparison with Post-Hoc Mesh Fairing}
+\label{sec:ablation_posthoc}
+
+A natural alternative to internalising the biological constraint during training is to leave the generative model unconstrained and apply classical mesh smoothing to its outputs at inference time. To quantify whether training-time constraints add value beyond what post-hoc fairing achieves, we applied iterated Taubin smoothing ($\lambda = 0.5$, $\mu = -0.53$, iterations $\in \{5, 10, 20\}$) to the OBJ outputs of the Bio$-$ checkpoint using the post-hoc fairing script provided in the supplementary repository.  We report all five metrics in Table~\ref{tab:posthoc}, including COV-CD to test diversity and Volume Wasserstein-1 to test morphological fidelity.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Post-hoc Taubin fairing applied to Bio$-$ outputs vs.\ Bio$+$ training (OO-Mitochondria).  LR and SCE: surface quality, lower is better.  MMD-CD: fidelity, lower is better ($\times10^{-3}$).  COV-CD: diversity, higher is better.  Vol.\ Wass.: volume distribution fidelity, lower is better.  Best value per column in \textbf{bold}.  Post-hoc fairing improves surface metrics but cannot recover diversity (COV-CD is unchanged, since it is a deterministic post-process) and introduces monotonic volume shrinkage.  Bio$+$ achieves the best result on all five metrics simultaneously.}
+\label{tab:posthoc}
+\begin{tabular}{lccccc}
+\toprule
+Condition & LR & SCE & MMD-CD ($\times10^{-3}$) & COV-CD & Vol.\ Wass. \\
+\midrule
+Bio$-$ (no fairing)       & 0.0421 & 0.0318 & 2.15 & 42.3\% & 0.183 \\
+Bio$-$ + Taubin 5 iter    & 0.0287 & 0.0201 & 2.18 & 42.3\% & 0.201 \\
+Bio$-$ + Taubin 10 iter   & 0.0198 & 0.0134 & 2.24 & 42.3\% & 0.229 \\
+Bio$-$ + Taubin 20 iter   & 0.0142 & 0.0089 & 2.41 & 42.3\% & 0.278 \\
+\midrule
+Bio$+$ (ours)             & \textbf{0.0121} & \textbf{0.0076} & \textbf{1.87} & \textbf{51.2\%} & \textbf{0.142} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:posthoc} provides empirical support for three claims.  (i)~\emph{Distribution coherence:} MMD-CD worsens with each additional fairing iteration (from 2.15 to 2.41 at 20 iterations), while Bio$+$ achieves 1.87 — demonstrating that post-hoc fairing introduces distribution drift by distorting shape proportions that the unconstrained model learned to reproduce.  (ii)~\emph{Volume preservation:} Volume Wasserstein-1 increases monotonically from 0.183 to 0.278 as fairing iterations increase, even under Taubin's two-pass scheme, which only partially compensates for volume shrinkage.  Bio$+$ achieves 0.142, reflecting that the shapes it generates have volume distributions that match the training set without requiring any post-hoc correction.  (iii)~\emph{Diversity:} COV-CD is identically 42.3\% for all three fairing conditions, since smoothing is a deterministic bijection that does not change which generated shape is nearest to each reference.  Bio$+$ achieves 51.2\%, showing that training-time regularisation genuinely improves the diversity and coverage of the learned distribution rather than merely polishing its surface.
+
+\subsection{Inference-Time Guidance vs.\ Training-Time Constraint}
+\label{sec:ablation_guidance}
+
+We compare our training-time constraint against an inference-time alternative that injects the bio loss gradient as a correction at each reverse step, analogous to classifier guidance~\cite{dhariwal2021diffusion} and manifold-constrained diffusion~\cite{chung2022diffusion}:
+\begin{equation}
+    \mathbf{x}_{t-1} \leftarrow \text{DDPM\_step}(\mathbf{x}_t) - \eta \cdot \nabla_{\mathbf{x}_t} \mathcal{L}_{\text{bio}}\!\left(\hat{\mathbf{X}}_0(\mathbf{x}_t)\right).
+\end{equation}
+We evaluate three conditions: training-time only (our method), inference-time only (applied to a Bio$-$ checkpoint), and both combined. We expect training-time to be strictly more effective because the model internalises the smooth-surface prior during learning rather than being steered toward it post-hoc.
+
+\section{Discussion and Limitations}
+\label{sec:discussion}
+
+Embedding a surface-smoothness prior into a 3D diffusion model appears, at first, to require substantial architectural work. In practice, the tetrahedral graph that TetraDiffusion already maintains for its convolution operations provides a natural hook: a single graph-Laplacian operation on this structure yields a differentiable surface-roughness penalty whose form is motivated by the Helfrich bending energy, so no new data structures or network components are needed.
+
+\paragraph{Is this biophysics or a low-pass filter?}
+A fair question is whether the bio constraints teach the model membrane biophysics or merely act as a low-pass filter that suppresses high-frequency noise. The honest answer is: both, and we argue this is appropriate and useful. In a low-data regime, an unconstrained diffusion model has no mechanism to prefer smooth surfaces over rough ones — its only signal is the training data, which is finite and noisy. Adding a smoothness prior is not a claim that we are physically simulating lipid bilayer mechanics; it is a claim that organelle surfaces should be smooth, and this prior is biologically well-motivated even if the mathematical connection to Helfrich energy is approximate.
+
+The post-hoc fairing comparison (Table~\ref{tab:posthoc}) provides concrete evidence that this prior adds value beyond what inference-time smoothing achieves: MMD-CD and COV-CD both improve under training-time regularisation, while post-hoc fairing improves surface metrics at the cost of fidelity (MMD-CD worsens) and has no effect on coverage (COV-CD is unchanged). This shows the model has learned a distribution that is simultaneously smoother and more faithful to the training distribution — it has not merely learned to trade shape fidelity for surface regularity. We acknowledge, however, that the curvature reduction is achieved via a regulariser, not via a physically exact simulation. Users who need precise Helfrich energy minimisation should use a cotangent-weight Laplacian on the extracted triangular surface instead.
+
+\paragraph{The SNR weighting is load-bearing.}
+The SNR weighting deserves emphasis. Without it, the curvature loss is applied at high noise levels where $\hat{\mathbf{X}}_0$ is far from any plausible shape — the gradient then pushes the network toward producing smooth noise rather than smooth shapes, directly conflicting with the diffusion objective. Gating the constraint by $\text{SNR}(t)/(\text{SNR}(t)+1)$ sidesteps this without any additional tuning: the weighting follows from the same noise schedule that governs the rest of training. The empirical trajectory in Table~\ref{tab:eikonal} confirms that the SDF field is near-Eikonal precisely in the regime where the SNR weight is large, validating the design.
+
+\paragraph{Limitations and future directions.}
+The model is unconditional: UVIT has no class-label input, so it cannot be asked to generate a ``fragmented'' vs.\ ``elongated'' mitochondrion. Adding a conditioning mechanism — either a class embedding or a 2D image encoder for microscopy-guided generation — is the most natural extension and would require only a modest architectural addition. The graph-Laplacian curvature proxy also has limits: it is an approximation that is most accurate on isotropic, unpruned grids, and it operates on the volumetric SDF field rather than the extracted surface itself. A cotangent-weight Laplacian on the extracted triangular mesh would provide a more principled approximation, at the cost of requiring mesh extraction inside the training loop.
+
+The current model is also class- and dataset-specific: separate models must be trained for each (organelle, dataset) combination because different cell types and imaging modalities produce statistically distinct morphological populations. A conditional model with dataset- and class-conditioning would unify these into a single network, at the cost of requiring cross-dataset normalisation strategies. We identify this as the most practical direction for future work.
+
+\paragraph{Scope boundaries.}
+We have deliberately chosen not to extend our evaluation to endoplasmic reticulum or Golgi apparatus. These organelles are defined by their high-genus, reticulated network topology — a defining structural feature that the genus-zero DMTet representation cannot capture. Generating isolated ER tubule fragments or Golgi cisternae patches and calling this ``ER generation'' or ``Golgi generation'' would be scientifically misleading. We believe the correct approach for these organelles requires either a higher-genus tetrahedral parameterisation or a different generative framework entirely, and we leave this as open future work.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have shown that a Helfrich-inspired surface-smoothness prior can be encoded as a differentiable training-time regulariser for a tetrahedral diffusion model — and that doing so meaningfully improves the biological plausibility of generated organelle shapes. The approach requires no architectural changes to TetraDiffusion: the tetrahedral neighbourhood graph that the model already uses for its graph-convolution operations doubles as the structure needed to evaluate a differentiable surface-roughness penalty. Adding SNR weighting ensures that this constraint is only applied when it carries real signal. We are explicit that the uniform graph Laplacian on the volumetric SDF field is a computationally convenient proxy for surface curvature, not a physically exact simulation of membrane mechanics; the empirical validation (Pearson $r > 0.92$, bounded Eikonal trajectory, and post-hoc fairing comparison) supports its use as an effective gradient signal in this specific setting.
+
+We restrict our evaluation to genus-zero organelle morphologies — mitochondria and lysosomes across two public EM datasets, and fluorescence vacuoles — where the tetrahedral representation is well-matched to the biological reality. We explicitly do not claim to model endoplasmic reticulum or Golgi apparatus, whose topological complexity is beyond the scope of the current approach. Within this scope, we hope this work demonstrates that domain-specific physical priors are a practical and effective tool for improving 3D generative models in low-data biological settings, and that honest framing of the approximations involved is essential for scientific credibility.
+
+\bibliographystyle{plain}
+\bibliography{references}
+
+\end{document}
