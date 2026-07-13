@@ -66,6 +66,7 @@ class Trainer(object):
             config=OmegaConf.to_container(cfg, resolve=True),
             resume=wandb_resume,
             id=wandb_id,
+            settings=wandb.Settings(init_timeout=300),
         )
 
         # persist run id so future resumes reconnect to the same wandb run
