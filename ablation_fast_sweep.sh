@@ -68,13 +68,14 @@ SUBMITTED=()
 
 submit() {
     local name="$1"; shift
-    # Prepend SLURM options (time, gres) before the script name to override #SBATCH defaults.
     local cmd=(sbatch --time="$TIME_LIMIT" --gres="$GRES_REQ" "$SUBMIT" --name "$name" \
         --data_path    "$DATA_PATH" \
         --csv_path     "$CSV_PATH" \
         --category     "$CATEGORY" \
-        --num_steps    50000 \
+        --num_steps    15000 \
         --batch_size   4 \
+        --mixed_precision \
+        --test_every   3000 \
         --wandb_project "TetraDiffusion_ablation" \
         "$@")
 
@@ -217,7 +218,7 @@ echo "============================================================"
 echo "  FAST ABLATION SWEEP -- SUMMARY"
 echo "============================================================"
 echo "  Dataset    : data_test/preprocessed/lyso  (26 shapes)"
-echo "  Steps/run  : 50 000"
+echo "  Steps/run  : 15 000"
 echo "  Batch size : 4  (baseline)"
 echo "  WandB      : TetraDiffusion_ablation"
 echo ""

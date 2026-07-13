@@ -76,6 +76,10 @@ parser.add_argument('--bio_curvature_softness', type=float,
                     help='Surface kernel width σ for curvature bio loss '
                          '(overrides diffusion.bio_curvature_softness). '
                          'Typical sweep: 0.05 / 0.10 / 0.15 / 0.20 / 0.30.')
+parser.add_argument('--mixed_precision', action='store_true',
+                    help='Enable FP16 mixed precision training to speed up runs.')
+parser.add_argument('--test_every', type=int,
+                    help='Number of training steps between saving checkpoints and sampling meshes.')
 args = parser.parse_args()
 
 if args.name is not None:
@@ -148,6 +152,12 @@ if args.snr_gate is not None:
 
 if args.bio_curvature_softness is not None:
     OmegaConf.update(cfg, 'diffusion.bio_curvature_softness', args.bio_curvature_softness)
+
+if args.mixed_precision:
+    OmegaConf.update(cfg, 'training.mixed_precision', True)
+
+if args.test_every is not None:
+    OmegaConf.update(cfg, 'training.test_every', args.test_every)
 
 
 print(cfg)
