@@ -41,6 +41,14 @@ DATA_PATH="${SCRIPT_DIR}/data_test/preprocessed"
 CSV_PATH="${SCRIPT_DIR}/lib/all_urocell.csv"
 CATEGORY="lyso"
 
+# -- Default SLURM resources for fast sweeps -----------------
+# 3 hours is plenty for 50k steps on data_test. Asking for a short time
+# allows SLURM to backfill the jobs almost immediately.
+TIME_LIMIT="03:00:00"
+# Requesting generic 'gpu:1' allows the jobs to run on ANY available GPU
+# (e.g. A100, RTX3090) instead of waiting solely for H100s.
+GRES_REQ="gpu:1"
+
 # -- Argument parsing ----------------------------------------
 DRY_RUN=false
 TARGET_TIER=""
@@ -49,6 +57,8 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry_run) DRY_RUN=true; shift ;;
         --tier)    TARGET_TIER="$2"; shift 2 ;;
+        --time)    TIME_LIMIT="$2"; shift 2 ;;
+        --gres)    GRES_REQ="$2"; shift 2 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -58,7 +68,8 @@ SUBMITTED=()
 
 submit() {
     local name="$1"; shift
-    local cmd=(sbatch "$SUBMIT" --name "$name" \
+    # Prepend SLURM options (time, gres) before the script name to override #SBATCH defaults.
+    local cmd=(sbatch --time="$TIME_LIMIT" --gres="$GRES_REQ" "$SUBMIT" --name "$name" \
         --data_path    "$DATA_PATH" \
         --csv_path     "$CSV_PATH" \
         --category     "$CATEGORY" \
