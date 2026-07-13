@@ -128,6 +128,8 @@ class GaussianDiffusion(nn.Module):
         self.bio_loss_type          = str(getattr(bio_cfg, 'bio_loss_type', 'both'))
         self.bio_curvature_softness = float(getattr(bio_cfg, 'bio_curvature_softness', 0.15))
         self.bio_eikonal_weight     = float(getattr(bio_cfg, 'bio_eikonal_weight', 0.0))
+        self.sdf_bg_loss_weight     = float(getattr(bio_cfg, 'sdf_bg_loss_weight', 0.0))
+        self.sdf_bg_threshold       = float(getattr(bio_cfg, 'sdf_bg_threshold', 0.3))
 
         # SNR gate — governs when biological losses are active.
         #   "soft"     : w(t) = SNR(t) / (SNR(t) + 1)  (default, continuous)
@@ -140,9 +142,15 @@ class GaussianDiffusion(nn.Module):
 
         # Store the tetrahedral-graph neighbour table (finest resolution) on CPU;
         # it will be moved to the active device on first use.
+        # Determine if the bio-constraint block should be active at all:
+        # either the classic bio loss OR the new sdf_bg_loss are enabled.
+        self._any_bio_active = (
+            self.bio_loss_weight > 0.0 or self.sdf_bg_loss_weight > 0.0
+        )
+
         self._bio_neighbors  = None
         self._bio_edge_lengths = None
-        if self.bio_loss_weight > 0.0 and ds is not None:
+        if self._any_bio_active and ds is not None:
             # After grid-pruning ds.neighbors[-1] is in the pruned vertex space —
             # the same space the training data lives in.
             self._bio_neighbors = ds.neighbors[-1].long().cpu()
@@ -158,6 +166,8 @@ class GaussianDiffusion(nn.Module):
                 f"type={self.bio_loss_type}, weight={self.bio_loss_weight}, "
                 f"snr_gate={self.snr_gate}, "
                 f"eikonal_weight={self.bio_eikonal_weight}, "
+                f"sdf_bg_loss_weight={self.sdf_bg_loss_weight}, "
+                f"sdf_bg_threshold={self.sdf_bg_threshold}, "
                 f"neighbor shape={self._bio_neighbors.shape}"
             )
 
@@ -318,13 +328,13 @@ class GaussianDiffusion(nn.Module):
         diffusion_loss = (loss * loss_weight).mean()
 
         # ------------------------------------------------------------------
-        # Biological constraint losses
+        # Biological constraint losses  +  SDF background loss
         # Recover predicted x_start (clean sample estimate) and apply
-        # curvature / smoothness regularisation on it.  Losses are scaled by
-        # a smooth SNR weight so they only meaningfully contribute when the
-        # model's clean-sample estimate is already roughly correct (low noise).
+        # curvature / smoothness regularisation on it.  The SDF background
+        # loss additionally fires even when bio_loss_weight=0 so it can be
+        # used as a standalone training signal.
         # ------------------------------------------------------------------
-        if self.bio_loss_weight > 0.0 and self._bio_neighbors is not None:
+        if self._any_bio_active and self._bio_neighbors is not None:
             # Recover x_start_pred from model output without re-running the model
             padded_log_snr = right_pad_dims_to(x, log_snr)
             alpha_p = sqrt(padded_log_snr.sigmoid())
@@ -341,50 +351,56 @@ class GaussianDiffusion(nn.Module):
                 self._bio_edge_lengths.to(x.device)
                 if self._bio_edge_lengths is not None else None
             )
-            bio = organelle_loss_registry.compute_loss(
-                organelle_name=self.bio_loss_type,
-                x_start=x_start_pred,
-                neighbors=neighbors,
-                surface_softness=self.bio_curvature_softness,
-                edge_lengths=edge_lengths,
-                eikonal_weight=self.bio_eikonal_weight,
-            )
 
-            # ------------------------------------------------------------------
-            # SNR gate: controls when the biological losses are active.
-            #   "soft"   : w(t) = SNR(t) / (SNR(t) + 1)  — continuous gate
-            #   "hard_X" : step function at noise level t = X (X ∈ {0.3,0.5,0.7})
-            #   "none"   : no gating, constant weight 1.0
-            # ------------------------------------------------------------------
+            # ── SNR gate ─────────────────────────────────────────────────
             gate = self.snr_gate
             if gate == 'soft':
                 snr_weight = (snr / (snr + 1)).mean()
             elif gate == 'none':
                 snr_weight = 1.0
             elif gate.startswith('hard_'):
-                # Convert hard threshold from noise-fraction t to SNR domain.
-                # The cosine schedule maps t ∈ [0,1] → SNR; at the threshold
-                # t* the corresponding SNR is SNR* = tan²(t_min + t*(t_max-t_min)).
-                # Here we implement the gate directly in t-space: the batch
-                # SNR values are per-sample, so we approximate by checking
-                # whether the mean t is below the threshold.
                 try:
                     t_thresh = float(gate.split('_')[1])
                 except (IndexError, ValueError):
                     t_thresh = 0.5
-                # times is in [0,1]; high SNR = low t (clean), low SNR = high t (noisy)
-                # We gate ON (1.0) when t < t_thresh, OFF (0.0) otherwise.
                 snr_weight = (times < t_thresh).float().mean()
             else:
-                snr_weight = (snr / (snr + 1)).mean()   # default to soft
+                snr_weight = (snr / (snr + 1)).mean()
 
-            weighted_bio = self.bio_loss_weight * snr_weight * bio
+            total_bio = x_start_pred.new_zeros(1).squeeze()
 
-            # Expose components for external logging (Trainer reads these)
-            self._last_bio_loss       = bio.detach()
+            # ── Classic bio constraints (laplacian + curvature + eikonal) ─
+            if self.bio_loss_weight > 0.0:
+                bio = organelle_loss_registry.compute_loss(
+                    organelle_name=self.bio_loss_type,
+                    x_start=x_start_pred,
+                    neighbors=neighbors,
+                    surface_softness=self.bio_curvature_softness,
+                    edge_lengths=edge_lengths,
+                    eikonal_weight=self.bio_eikonal_weight,
+                    # sdf_bg handled separately below so it can be
+                    # logged and weighted independently
+                    sdf_bg_loss_weight=0.0,
+                )
+                self._last_bio_loss = bio.detach()
+                total_bio = total_bio + self.bio_loss_weight * snr_weight * bio
+            else:
+                self._last_bio_loss = diffusion_loss.new_zeros(1).squeeze().detach()
+
+            # ── Surface-weighted SDF background loss ─────────────────────
+            if self.sdf_bg_loss_weight > 0.0:
+                from lib.ops.BioConstraints import sdf_background_loss
+                bg_loss = sdf_background_loss(
+                    x_start_pred, bg_threshold=self.sdf_bg_threshold
+                )
+                self._last_sdf_bg_loss = bg_loss.detach()
+                # SNR-gated: only meaningful when x_start_pred is reasonable
+                total_bio = total_bio + self.sdf_bg_loss_weight * snr_weight * bg_loss
+            else:
+                self._last_sdf_bg_loss = diffusion_loss.new_zeros(1).squeeze().detach()
+
             self._last_diffusion_loss = diffusion_loss.detach()
-
-            return diffusion_loss + weighted_bio
+            return diffusion_loss + total_bio
 
         return diffusion_loss
 

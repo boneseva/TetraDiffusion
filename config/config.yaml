@@ -62,6 +62,12 @@ diffusion:
   # Set to 0.0 to disable (default); typical values: 1e-3 – 1e-2.
   bio_eikonal_weight: 0.0       # weight for Eikonal loss (0 = disabled)
 
+  # Surface-weighted SDF background loss — fixes multi-component generation.
+  # See docs/sdf_background_loss.md for full explanation and ablation guidance.
+  # Set sdf_bg_loss_weight > 0 to enable (suggested starting value: 0.05).
+  sdf_bg_loss_weight: 0.0       # weight λ_bg (0 = disabled)
+  sdf_bg_threshold: 0.3         # normalised SDF cutoff defining "background" (0.2–0.5)
+
 
 # 2-D image conditioning  (see IMAGE_CONDITIONING.md for full details)
 # Set enabled: True to train a model that can be conditioned on 2D images.

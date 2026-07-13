@@ -252,6 +252,62 @@ def eikonal_loss(
     return (grad_sq - 1.0).pow(2).mean()
 
 
+def sdf_background_loss(
+    x_start: Tensor,
+    bg_threshold: float = 0.3,
+) -> Tensor:
+    """
+    Surface-weighted SDF background hinge loss.
+
+    Problem it solves
+    -----------------
+    The diffusion model must predict, for *every* vertex in the tetrahedral
+    grid, whether it is inside (SDF < 0) or outside (SDF > 0) the organelle.
+    The main MSE diffusion loss treats all vertices equally, so a handful of
+    spuriously negative predictions far from the true organelle surface can
+    accumulate undetected — yet each such patch becomes a ghost mesh component
+    when marching tets applies the hard ``torch.sign`` threshold at extraction
+    time.
+
+    This loss adds a smooth hinge penalty:
+
+        L_bg = mean( bg_weight(φ_gt) · ReLU(−φ_pred) )
+
+    where:
+        bg_weight(φ_gt) = ReLU( φ_gt − bg_threshold )   (zero inside surface band)
+        bg_threshold    = normalised SDF cutoff above which a vertex is
+                          considered "definitely outside" the organelle
+
+    Vertices near the true surface (|φ_gt| < bg_threshold) are exempted so
+    the loss does not fight the geometry near the zero-level set.  Background
+    vertices (φ_gt > bg_threshold) are penalised quadratically when the
+    predicted SDF goes negative.  The weight grows with distance from the
+    surface, making distant spurious predictions pay more.
+
+    Parameters
+    ----------
+    x_start : Tensor [B, N, C]
+        Predicted clean sample in diffusion latent space.
+        Channel 0 is the normalised SDF; range ≈ [−1, 1] after
+        ``normalize_to_neg_one_to_one``.
+    bg_threshold : float
+        Normalised SDF value above which a vertex is treated as background.
+        Typical range 0.2–0.5.  Corresponds to a fraction of the full
+        sdfs_max − sdfs_min range in physical units.
+
+    Returns
+    -------
+    Scalar Tensor — mean background hinge penalty.
+    """
+    sdf_pred = x_start[:, :, 0]                      # [B, N]  predicted SDF (normalised)
+    # Ground-truth sign comes from x_start itself — the "clean" x_start
+    # passed here is the ground-truth sample, not the model's prediction.
+    # Both are needed; see usage in DDPM.p_losses.
+    bg_weight = torch.relu(sdf_pred.detach() - bg_threshold)   # [B, N]  ≥ 0 outside band
+    hinge     = torch.relu(-sdf_pred)                          # [B, N]  ≥ 0 when pred < 0
+    return (bg_weight * hinge).mean()
+
+
 def biological_constraints_loss(
     x_start: Tensor,
     neighbors: Tensor,
@@ -491,9 +547,11 @@ class OrganelleLossRegistry:
         -------
         Scalar Tensor.
         """
-        surface_softness = kwargs.get("surface_softness", 0.15)
-        edge_lengths      = kwargs.get("edge_lengths", None)
-        eikonal_weight    = kwargs.get("eikonal_weight", 0.0)
+        surface_softness  = kwargs.get("surface_softness", 0.15)
+        edge_lengths       = kwargs.get("edge_lengths", None)
+        eikonal_weight     = kwargs.get("eikonal_weight", 0.0)
+        sdf_bg_loss_weight = kwargs.get("sdf_bg_loss_weight", 0.0)
+        sdf_bg_threshold   = kwargs.get("sdf_bg_threshold", 0.3)
 
         # ── Baseline losses (always active) ─────────────────────────────
         total = laplacian_displacement_loss(x_start, neighbors)
@@ -504,6 +562,12 @@ class OrganelleLossRegistry:
         if eikonal_weight > 0.0 and edge_lengths is not None:
             total = total + eikonal_weight * eikonal_loss(
                 x_start, neighbors, edge_lengths
+            )
+
+        # ── Surface-weighted SDF background loss ─────────────────────────
+        if sdf_bg_loss_weight > 0.0:
+            total = total + sdf_bg_loss_weight * sdf_background_loss(
+                x_start, bg_threshold=sdf_bg_threshold
             )
 
         # ── Custom registered losses ─────────────────────────────────────

@@ -389,6 +389,8 @@ class Trainer(object):
                             if hasattr(raw_model, '_last_bio_loss'):
                                 log_dict["bio_loss"] = raw_model._last_bio_loss.item()
                                 log_dict["diffusion_loss"] = raw_model._last_diffusion_loss.item()
+                            if hasattr(raw_model, '_last_sdf_bg_loss'):
+                                log_dict["sdf_bg_loss"] = raw_model._last_sdf_bg_loss.item()
                             wandb.log(log_dict, step=self.step)
 
                         pbar.set_description(

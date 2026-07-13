@@ -53,6 +53,29 @@ parser.add_argument('--exemplar_path', type=str, default=None,
                     help='Path to a preprocessed .pt exemplar sample file. '
                          'When provided, registers an ExemplarLossProfile on the '
                          '"exemplar" organelle slot and sets bio_loss_type=exemplar.')
+
+# ── Ablation-sweep flags (previously config-only) ─────────────────────────
+parser.add_argument('--offset_noise', type=float,
+                    help='Offset noise strength (overrides diffusion.offset_noise). '
+                         'Typical sweep: 0.0 / 0.05 / 0.1 / 0.2.')
+parser.add_argument('--sampling_steps', type=int, nargs='+',
+                    help='Inference sampling step counts as a space-separated list '
+                         '(overrides diffusion.sampling_steps). '
+                         'e.g. --sampling_steps 50 100')
+parser.add_argument('--sdf_bg_loss_weight', type=float,
+                    help='Weight for SDF background loss (overrides diffusion.sdf_bg_loss_weight). '
+                         'Set >0 to enable; suggested starting value: 0.05.')
+parser.add_argument('--sdf_bg_threshold', type=float,
+                    help='Normalised SDF cutoff defining "background" '
+                         '(overrides diffusion.sdf_bg_threshold). Range 0.2–0.5.')
+parser.add_argument('--snr_gate', type=str,
+                    choices=['soft', 'hard_0.3', 'hard_0.5', 'hard_0.7', 'none'],
+                    help='SNR gate mode for bio loss (overrides diffusion.snr_gate). '
+                         'soft=continuous weighting (default), none=no gating.')
+parser.add_argument('--bio_curvature_softness', type=float,
+                    help='Surface kernel width σ for curvature bio loss '
+                         '(overrides diffusion.bio_curvature_softness). '
+                         'Typical sweep: 0.05 / 0.10 / 0.15 / 0.20 / 0.30.')
 args = parser.parse_args()
 
 if args.name is not None:
@@ -106,6 +129,25 @@ if args.cfg_scale is not None:
 
 if args.csv_path is not None:
     OmegaConf.update(cfg, 'splits_csv', args.csv_path)
+
+# ── Ablation-sweep overrides ───────────────────────────────────────────────
+if args.offset_noise is not None:
+    OmegaConf.update(cfg, 'diffusion.offset_noise', args.offset_noise)
+
+if args.sampling_steps is not None:
+    OmegaConf.update(cfg, 'diffusion.sampling_steps', list(args.sampling_steps))
+
+if args.sdf_bg_loss_weight is not None:
+    OmegaConf.update(cfg, 'diffusion.sdf_bg_loss_weight', args.sdf_bg_loss_weight)
+
+if args.sdf_bg_threshold is not None:
+    OmegaConf.update(cfg, 'diffusion.sdf_bg_threshold', args.sdf_bg_threshold)
+
+if args.snr_gate is not None:
+    OmegaConf.update(cfg, 'diffusion.snr_gate', args.snr_gate)
+
+if args.bio_curvature_softness is not None:
+    OmegaConf.update(cfg, 'diffusion.bio_curvature_softness', args.bio_curvature_softness)
 
 
 print(cfg)
