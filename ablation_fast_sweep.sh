@@ -74,7 +74,7 @@ submit() {
         --csv_path     "$CSV_PATH" \
         --category     "$CATEGORY" \
         --num_steps    50000 \
-        --batch_size   8 \
+        --batch_size   4 \
         --wandb_project "TetraDiffusion_ablation" \
         "$@")
 
@@ -97,16 +97,15 @@ run_tier() { [[ -z "$TARGET_TIER" || "$TARGET_TIER" == "$1" ]]; }
 
 # =====================================================================
 #  TIER 1 -- Batch size
-#  Sweep: 4 / 8(baseline) / 16
-#  With 26 shapes and color=True the per-sample footprint is small;
-#  higher batch = more stable gradients on this tiny dataset.
+#  Sweep: 2 / 4(baseline) / 8
+#  Note: If batch size 8 causes OOM, use gradient accumulation instead.
 # =====================================================================
 if run_tier 1; then
     echo ""
     echo "==== TIER 1 -- Batch size ===="
+    submit "abl_bs2"  --batch_size 2
     submit "abl_bs4"  --batch_size 4
     submit "abl_bs8"  --batch_size 8
-    submit "abl_bs16" --batch_size 16
 fi
 
 # =====================================================================
@@ -219,7 +218,7 @@ echo "  FAST ABLATION SWEEP -- SUMMARY"
 echo "============================================================"
 echo "  Dataset    : data_test/preprocessed/lyso  (26 shapes)"
 echo "  Steps/run  : 50 000"
-echo "  Batch size : 8  (baseline)"
+echo "  Batch size : 4  (baseline)"
 echo "  WandB      : TetraDiffusion_ablation"
 echo ""
 echo "  ${#SUBMITTED[@]} job(s) queued:"
