@@ -44,7 +44,7 @@ CATEGORY="lyso"
 # Constraint targets H100 (ixh, 80GB) and A100 nodes (aga/axa 40GB SXM4,
 # ana 80GB PCIe) — excludes B200/B300 (Blackwell) and L4 (OOM).
 # Feature names from: sinfo -o "%N %f %G"
-GRES_REQ="gpu:1,gpu_mem:40G"
+GRES_REQ="gpu:1"   # gpu_mem qualifier not supported on this cluster; constraint handles node selection
 CONSTRAINT="GPU_BRD:H100|GPU_BRD:A100"
 # H100 ~0.7 s/it → 2.9h; A100 ~1.2 s/it → 5h.  6h covers both.
 TIME_LIMIT="06:00:00"
