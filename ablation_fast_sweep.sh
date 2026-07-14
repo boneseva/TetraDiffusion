@@ -54,6 +54,7 @@ TIME_LIMIT="06:00:00"
 # -- Argument parsing ----------------------------------------
 DRY_RUN=false
 TARGET_TIER=""
+RESUME=false
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -62,9 +63,14 @@ while [[ $# -gt 0 ]]; do
         --time)         TIME_LIMIT="$2"; shift 2 ;;
         --gres)         GRES_REQ="$2"; shift 2 ;;
         --constraint)   CONSTRAINT="$2"; shift 2 ;;
+        --resume)       RESUME=true; shift ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
+
+# Build resume flag forwarded to submit_train.sh (and on to main.py)
+RESUME_FLAG=()
+[ "$RESUME" = true ] && RESUME_FLAG=(--resume)
 
 # -- Submission helper ----------------------------------------
 SUBMITTED=()
@@ -82,6 +88,7 @@ submit() {
         --mixed_precision \
         --test_every   3000 \
         --wandb_project "TetraDiffusion_ablation" \
+        "${RESUME_FLAG[@]}" \
         "$@")
 
     if [ "$DRY_RUN" = true ]; then
