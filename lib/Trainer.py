@@ -50,15 +50,19 @@ class Trainer(object):
         )
 
         # ------------------------------------------------------------------
-        # wandb init — resume the same run if a saved run-id exists
+        # wandb init — only resume the same run when explicitly resuming
+        # training (--resume flag → cfg.load_weights=True).
+        # Fresh runs always create a new wandb run so deleted/stale runs
+        # are never accidentally reused.
         # ------------------------------------------------------------------
         wandb_id_file = os.path.join(config_folder, "wandb_run_id.txt")
-        wandb_resume = "never"
-        wandb_id = None
-        if os.path.exists(wandb_id_file):
+        if cfg.load_weights and os.path.exists(wandb_id_file):
             with open(wandb_id_file) as f:
                 wandb_id = f.read().strip()
             wandb_resume = "allow"
+        else:
+            wandb_id = None
+            wandb_resume = "never"
 
         run = wandb.init(
             project=getattr(cfg, 'wandb_project', 'TetraDiffusion'),
@@ -69,8 +73,8 @@ class Trainer(object):
             settings=wandb.Settings(init_timeout=300),
         )
 
-        # persist run id so future resumes reconnect to the same wandb run
-        if self.accelerator.is_main_process and not os.path.exists(wandb_id_file):
+        # Always overwrite the saved run id so fresh runs replace stale ones
+        if self.accelerator.is_main_process:
             os.makedirs(config_folder, exist_ok=True)
             with open(wandb_id_file, "w") as f:
                 f.write(run.id)
