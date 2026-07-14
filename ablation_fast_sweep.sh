@@ -41,11 +41,11 @@ DATA_PATH="${SCRIPT_DIR}/data_test/preprocessed"
 CSV_PATH="${SCRIPT_DIR}/lib/all_urocell.csv"
 CATEGORY="lyso"
 # -- Default SLURM resources for fast sweeps -----------------
-# Target A100 and H100 only — B200/B300 (Blackwell) are overkill for this
-# workload and trigger cluster warnings for under-utilisation.
-# L4 (24 GB) is OOM; GH200/MI210 are on different partitions.
-GRES_REQ="gpu:1"
-CONSTRAINT="A100|H100"   # SLURM node-feature OR constraint
+# Constraint targets H100 (ixh, 80GB) and A100 nodes (aga/axa 40GB SXM4,
+# ana 80GB PCIe) — excludes B200/B300 (Blackwell) and L4 (OOM).
+# Feature names from: sinfo -o "%N %f %G"
+GRES_REQ="gpu:1,gpu_mem:40G"
+CONSTRAINT="GPU_BRD:H100|GPU_BRD:A100"
 # H100 ~0.7 s/it → 2.9h; A100 ~1.2 s/it → 5h.  6h covers both.
 TIME_LIMIT="06:00:00"
 
