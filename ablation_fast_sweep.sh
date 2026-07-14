@@ -41,12 +41,14 @@ DATA_PATH="${SCRIPT_DIR}/data_test/preprocessed"
 CSV_PATH="${SCRIPT_DIR}/lib/all_urocell.csv"
 CATEGORY="lyso"
 # -- Default SLURM resources for fast sweeps -----------------
-# Constraint targets H100 (ixh, 80GB) and A100 nodes (aga/axa 40GB SXM4,
-# ana 80GB PCIe) — excludes B200/B300 (Blackwell) and L4 (OOM).
-# Feature names from: sinfo -o "%N %f %G"
-GRES_REQ="gpu:1"   # gpu_mem qualifier not supported on this cluster; constraint handles node selection
-CONSTRAINT="GPU_BRD:H100|GPU_BRD:A100"
-# H100 ~0.7 s/it → 2.9h; A100 ~1.2 s/it → 5h.  6h covers both.
+# Only 80 GB GPUs fit grid_res=128 + batch_size=4:
+#   ixh  → H100 80GB HBM3   (GPU_MEM:80GB)
+#   ana  → A100 80GB PCIe   (GPU_MEM:80GB)
+# A100 SXM4 40GB (aga/axa) OOMs; B200/B300 trigger under-utilisation warnings.
+# GPU_MEM:80GB is a single node feature — no OR logic needed, works reliably.
+GRES_REQ="gpu:1"
+CONSTRAINT="GPU_MEM:80GB"
+# H100 ~0.7 s/it → 2.9h; A100 80GB ~1.0 s/it → 4.2h.  6h covers both.
 TIME_LIMIT="06:00:00"
 
 # -- Argument parsing ----------------------------------------
