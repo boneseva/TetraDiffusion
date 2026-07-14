@@ -138,7 +138,9 @@ class Trainer(object):
             wandb.summary["total_params"] = total_params
             wandb.summary["trainable_params"] = trainable_params
 
-        wandb.watch(model, log_freq=200)
+        # watch=None: disable automatic gradient logging which calls wandb.log()
+        # internally and drifts the step counter ahead of self.step.
+        wandb.watch(model, log=None)
 
         if cfg.load_weights:
             all_weights = glob(config_folder + "/*.pt")
@@ -355,7 +357,11 @@ class Trainer(object):
                         self.opt.zero_grad()
 
                     local_sgd.step()
-                    self.accelerator.log({"training_loss": loss})
+                    # NOTE: do NOT call self.accelerator.log() here — it commits
+                    # a wandb step without an explicit step number, causing the
+                    # internal counter to drift ahead of self.step and producing
+                    # "step X < current step Y" warnings.  Loss is logged below
+                    # in log_dict with the correct step=self.step.
 
                     if self.scheduler is not None:
                         self.scheduler.step()

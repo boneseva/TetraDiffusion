@@ -41,12 +41,13 @@ DATA_PATH="${SCRIPT_DIR}/data_test/preprocessed"
 CSV_PATH="${SCRIPT_DIR}/lib/all_urocell.csv"
 CATEGORY="lyso"
 # -- Default SLURM resources for fast sweeps -----------------
-# 3 hours is plenty for 15k steps on data_test. Asking for a short time
-# allows SLURM to backfill the jobs almost immediately.
-TIME_LIMIT="03:00:00"
-# Requesting generic 'gpu:1,gpu_mem:32G' targets any GPU with >= 32GB VRAM
-# (e.g. A100, H100, B200) while avoiding memory-constrained 24GB L4 GPUs.
-GRES_REQ="gpu:1,gpu_mem:40G"
+# Target A100 and H100 only — B200/B300 (Blackwell) are overkill for this
+# workload and trigger cluster warnings for under-utilisation.
+# L4 (24 GB) is OOM; GH200/MI210 are on different partitions.
+GRES_REQ="gpu:1"
+CONSTRAINT="A100|H100"   # SLURM node-feature OR constraint
+# H100 ~0.7 s/it → 2.9h; A100 ~1.2 s/it → 5h.  6h covers both.
+TIME_LIMIT="06:00:00"
 
 # -- Argument parsing ----------------------------------------
 DRY_RUN=false
@@ -54,10 +55,11 @@ TARGET_TIER=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --dry_run)    DRY_RUN=true; shift ;;
-        --tier)       TARGET_TIER="$2"; shift 2 ;;
-        --time)       TIME_LIMIT="$2"; shift 2 ;;
-        --gres)       GRES_REQ="$2"; shift 2 ;;
+        --dry_run)      DRY_RUN=true; shift ;;
+        --tier)         TARGET_TIER="$2"; shift 2 ;;
+        --time)         TIME_LIMIT="$2"; shift 2 ;;
+        --gres)         GRES_REQ="$2"; shift 2 ;;
+        --constraint)   CONSTRAINT="$2"; shift 2 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
 done
@@ -67,7 +69,9 @@ SUBMITTED=()
 
 submit() {
     local name="$1"; shift
-    local cmd=(sbatch --time="$TIME_LIMIT" --gres="$GRES_REQ" "$SUBMIT" --name "$name" \
+    local constraint_flag=()
+    [ -n "${CONSTRAINT:-}" ] && constraint_flag=(--constraint="$CONSTRAINT")
+    local cmd=(sbatch --time="$TIME_LIMIT" --gres="$GRES_REQ" "${constraint_flag[@]}" "$SUBMIT" --name "$name" \
         --data_path    "$DATA_PATH" \
         --csv_path     "$CSV_PATH" \
         --category     "$CATEGORY" \
@@ -90,6 +94,7 @@ submit() {
         else
             echo "  FAIL  $name"
         fi
+        sleep 5   # stagger submissions — avoids SLURM scheduler storms and WandB init races
     fi
 }
 
