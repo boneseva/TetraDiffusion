@@ -86,13 +86,15 @@ submit() {
         echo "[DRY RUN] ${cmd[*]}"
         SUBMITTED+=("$name")
     else
+        local output
+        output=$("${cmd[@]}" 2>&1) || true
         local jid
-        jid=$(${cmd[@]} 2>&1 | grep -oP '(?<=Submitted batch job )\d+' || true)
+        jid=$(echo "$output" | grep -oP '(?<=Submitted batch job )\d+' || true)
         if [ -n "$jid" ]; then
             echo "  OK  Queued  $name  (job $jid)"
             SUBMITTED+=("$name ($jid)")
         else
-            echo "  FAIL  $name"
+            echo "  FAIL  $name — sbatch said: $output"
         fi
         sleep 5   # stagger submissions — avoids SLURM scheduler storms and WandB init races
     fi
