@@ -124,6 +124,12 @@ for bs in args.sizes:
         for step, batch in enumerate(loader):
             if step >= args.steps:
                 break
+            # Accelerate moves the batch to device automatically during training;
+            # replicate that here since we're bypassing Accelerate.
+            if isinstance(batch, torch.Tensor):
+                batch = batch.to(device)
+            elif isinstance(batch, (list, tuple)):
+                batch = [b.to(device) if isinstance(b, torch.Tensor) else b for b in batch]
             opt.zero_grad()
             with autocast():
                 loss = diffusion(batch)
