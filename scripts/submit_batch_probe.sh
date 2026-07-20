@@ -53,6 +53,7 @@ submit_probe() {
                 --data_path ${SCRIPT_DIR}/data_test/preprocessed \
                 --csv_path  ${SCRIPT_DIR}/lib/all_urocell.csv \
                 --category  lyso \
+                --ds_path   ${SCRIPT_DIR}/runs/abl_bio_on/ds.pth \
                 --sizes     4 8 16 32 48 64
         "
     )

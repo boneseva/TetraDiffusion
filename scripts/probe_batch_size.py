@@ -29,9 +29,12 @@ parser.add_argument('--data_path', required=True)
 parser.add_argument('--csv_path',  required=True)
 parser.add_argument('--category',  default='lyso')
 parser.add_argument('--grid_res',  type=int, default=128)
-parser.add_argument('--sizes',     type=int, nargs='+',
-                    default=[16, 24, 32, 48, 64, 96, 128])
-parser.add_argument('--steps',     type=int, default=3,
+parser.add_argument('--ds_path', default=None,
+                    help='Path to an existing ds.pth (e.g. runs/abl_bio_on/ds.pth). '
+                         'Skips GridPruning recomputation. Falls back to full MeshLoader if not given.')
+parser.add_argument('--sizes', type=int, nargs='+',
+                    default=[4, 8, 16, 32, 48, 64])
+parser.add_argument('--steps', type=int, default=3,
                     help='Forward+backward passes per batch size (default 3)')
 args = parser.parse_args()
 
@@ -72,9 +75,15 @@ from lib.DDPM import GaussianDiffusion
 from torch.cuda.amp import autocast, GradScaler
 
 print('[probe] Loading dataset...')
-from accelerate import Accelerator as _Accelerator
-_acc = _Accelerator()
-ds = MeshLoader(config=cfg, device='cpu', cuda_device=device, accelerator=_acc)
+if args.ds_path and os.path.isfile(args.ds_path):
+    print(f'[probe] Loading existing ds.pth from {args.ds_path} (skipping GridPruning)...')
+    ds = torch.load(args.ds_path, map_location='cpu', weights_only=False)
+    ds.config = cfg
+else:
+    print('[probe] No --ds_path given, building MeshLoader (slow)...')
+    from accelerate import Accelerator as _Accelerator
+    _acc = _Accelerator()
+    ds = MeshLoader(config=cfg, device='cpu', cuda_device=device, accelerator=_acc)
 print(f'[probe] Dataset loaded — {len(ds)} samples.')
 
 num_verts = len(ds.tet_verts)
