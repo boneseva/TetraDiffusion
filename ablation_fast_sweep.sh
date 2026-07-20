@@ -41,15 +41,11 @@ DATA_PATH="${SCRIPT_DIR}/data_test/preprocessed"
 CSV_PATH="${SCRIPT_DIR}/lib/all_urocell.csv"
 CATEGORY="lyso"
 # -- Default SLURM resources for fast sweeps -----------------
-# Only 80 GB GPUs fit grid_res=128 + batch_size=4:
-#   ixh  → H100 80GB HBM3   (GPU_MEM:80GB)
-#   ana  → A100 80GB PCIe   (GPU_MEM:80GB)
-# A100 SXM4 40GB (aga/axa) OOMs; B200/B300 trigger under-utilisation warnings.
-# GPU_MEM:80GB is a single node feature — no OR logic needed, works reliably.
+# No GPU_MEM constraint — allows B200/B300 which have headroom for large batches.
+# Run scripts/submit_batch_probe.sh first to find the max batch size for your GPU.
 GRES_REQ="gpu:1"
-CONSTRAINT="GPU_MEM:256GB"
-# H100 ~0.7 s/it → 2.9h; A100 80GB ~1.0 s/it → 4.2h.  6h covers both.
-TIME_LIMIT="06:00:00"
+CONSTRAINT=""
+TIME_LIMIT="24:00:00"
 
 # -- Argument parsing ----------------------------------------
 DRY_RUN=false
@@ -84,7 +80,8 @@ submit() {
         --csv_path     "$CSV_PATH" \
         --category     "$CATEGORY" \
         --num_steps    1000000 \
-        --batch_size   16 \
+        --batch_size   4 \
+        --ga           4 \
         --mixed_precision \
         --test_every   5000 \
         --wandb_project "TetraDiffusion_ablation" \
