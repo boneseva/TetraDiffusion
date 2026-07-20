@@ -47,7 +47,7 @@ CATEGORY="lyso"
 # A100 SXM4 40GB (aga/axa) OOMs; B200/B300 trigger under-utilisation warnings.
 # GPU_MEM:80GB is a single node feature — no OR logic needed, works reliably.
 GRES_REQ="gpu:1"
-CONSTRAINT="GPU_MEM:80GB"
+CONSTRAINT="GPU_MEM:256GB"
 # H100 ~0.7 s/it → 2.9h; A100 80GB ~1.0 s/it → 4.2h.  6h covers both.
 TIME_LIMIT="06:00:00"
 
