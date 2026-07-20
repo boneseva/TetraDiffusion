@@ -109,19 +109,6 @@ submit() {
 run_tier() { [[ -z "$TARGET_TIER" || "$TARGET_TIER" == "$1" ]]; }
 
 # =====================================================================
-#  TIER 1 -- Batch size
-#  Sweep: 2 / 4(baseline) / 8
-#  Note: If batch size 8 causes OOM, use gradient accumulation instead.
-# =====================================================================
-if run_tier 1; then
-    echo ""
-    echo "==== TIER 1 -- Batch size ===="
-    submit "abl_bs2"  --batch_size 2
-    submit "abl_bs4"  --batch_size 4
-    submit "abl_bs8"  --batch_size 8
-fi
-
-# =====================================================================
 #  TIER 2 -- Offset noise
 #  Sweep: 0.0 / 0.05 / 0.1(default) / 0.2
 #  Offset noise prevents mean-collapse on small datasets.

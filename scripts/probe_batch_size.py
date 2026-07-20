@@ -14,6 +14,12 @@ Usage (submit via submit_batch_probe.sh, or run directly):
 """
 import argparse
 import sys
+import os
+
+# Ensure the repo root is on sys.path so 'lib' is importable when
+# the script is invoked from any working directory inside the container.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import gc
 import torch
 from omegaconf import OmegaConf
@@ -66,7 +72,9 @@ from lib.DDPM import GaussianDiffusion
 from torch.cuda.amp import autocast, GradScaler
 
 print('[probe] Loading dataset...')
-ds = MeshLoader(config=cfg, device='cpu', cuda_device=device, accelerator=None)
+from accelerate import Accelerator as _Accelerator
+_acc = _Accelerator()
+ds = MeshLoader(config=cfg, device='cpu', cuda_device=device, accelerator=_acc)
 print(f'[probe] Dataset loaded — {len(ds)} samples.')
 
 num_verts = len(ds.tet_verts)
