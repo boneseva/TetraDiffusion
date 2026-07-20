@@ -67,12 +67,21 @@ def read_step(pt_path):
 
 
 def main():
-    search_root = sys.argv[1] if len(sys.argv) > 1 else 'runs'
-    pattern = os.path.join(search_root, '**', 'model-*.pt')
+    import argparse
+    parser = argparse.ArgumentParser(description='List and manage TetraDiffusion checkpoints.')
+    parser.add_argument('root', nargs='?', default='runs',
+                        help='Directory to scan (default: runs/)')
+    parser.add_argument('--clean', action='store_true',
+                        help='Delete the lower-step checkpoint in each run, keeping only the best.')
+    parser.add_argument('--yes', action='store_true',
+                        help='Actually delete (default is dry-run, only prints what would be removed).')
+    args = parser.parse_args()
+
+    pattern = os.path.join(args.root, '**', 'model-*.pt')
     files = sorted(glob.glob(pattern, recursive=True))
 
     if not files:
-        print(f'No model-*.pt files found under {search_root!r}')
+        print(f'No model-*.pt files found under {args.root!r}')
         return
 
     rows = []
@@ -83,10 +92,54 @@ def main():
     # Sort by step (errors last)
     rows.sort(key=lambda r: r[0] if isinstance(r[0], int) else 999_999_999)
 
-    print(f"{'STEP':>8}  {'SAVED AT':>19}  {'SRC':>4}  PATH")
-    print('-' * 80)
+    if not args.clean:
+        print(f"{'STEP':>8}  {'SAVED AT':>19}  {'SRC':>4}  PATH")
+        print('-' * 80)
+        for step, ts, src, path in rows:
+            print(f"{str(step):>8}  {ts:>19}  {src:>4}  {path}")
+        return
+
+    # ── --clean mode ──────────────────────────────────────────────────────────
+    # Group by run folder (parent directory of the .pt file)
+    from collections import defaultdict
+    by_run = defaultdict(list)
     for step, ts, src, path in rows:
-        print(f"{str(step):>8}  {ts:>19}  {src:>4}  {path}")
+        run_dir = os.path.dirname(path)
+        by_run[run_dir].append((step, path))
+
+    to_delete = []
+    for run_dir, entries in sorted(by_run.items()):
+        valid = [(s, p) for s, p in entries if isinstance(s, int)]
+        errors = [(s, p) for s, p in entries if not isinstance(s, int)]
+        if len(valid) <= 1:
+            continue  # nothing to clean
+        best_step = max(s for s, _ in valid)
+        for step, path in valid:
+            if step < best_step:
+                to_delete.append((run_dir, step, best_step, path))
+        for step, path in errors:
+            print(f"  SKIP (unreadable, step={step}): {path}")
+
+    if not to_delete:
+        print("Nothing to clean — each run already has only one checkpoint or all steps are equal.")
+        return
+
+    print(f"{'RUN':<35}  {'DEL STEP':>8}  {'KEEP STEP':>9}  FILE")
+    print('-' * 80)
+    for run_dir, step, best, path in to_delete:
+        tag = '' if args.yes else '  [dry-run]'
+        print(f"{os.path.basename(run_dir):<35}  {step:>8}  {best:>9}  {os.path.basename(path)}{tag}")
+
+    if not args.yes:
+        print(f"\n{len(to_delete)} file(s) would be deleted. Re-run with --yes to confirm.")
+        return
+
+    for _, _, _, path in to_delete:
+        os.remove(path)
+        sidecar = path.replace('.pt', '.json')
+        if os.path.isfile(sidecar):
+            os.remove(sidecar)
+    print(f"\nDeleted {len(to_delete)} checkpoint(s).")
 
 
 if __name__ == '__main__':
