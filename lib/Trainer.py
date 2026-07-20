@@ -128,7 +128,7 @@ class Trainer(object):
 
             # Log a few real training samples as point clouds so you can
             # verify the data pipeline looks correct before training starts.
-            if self.accelerator.is_main_process:
+            if self.accelerator.is_main_process and not cfg.load_weights:
                 print("[Trainer] Logging training sample point clouds to WandB …")
                 # Use the current wandb run step so step ordering is always
                 # monotonically increasing, even when resuming a run.
