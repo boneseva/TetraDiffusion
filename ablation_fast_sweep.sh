@@ -83,10 +83,10 @@ submit() {
         --data_path    "$DATA_PATH" \
         --csv_path     "$CSV_PATH" \
         --category     "$CATEGORY" \
-        --num_steps    15000 \
-        --batch_size   4 \
+        --num_steps    1000000 \
+        --batch_size   16 \
         --mixed_precision \
-        --test_every   3000 \
+        --test_every   5000 \
         --wandb_project "TetraDiffusion_ablation" \
         "${RESUME_FLAG[@]}" \
         "$@")
