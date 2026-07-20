@@ -151,16 +151,8 @@ class Trainer(object):
         # internally and drifts the step counter ahead of self.step.
         wandb.watch(model, log=None)
 
-        if cfg.load_weights:
-            all_weights = glob(config_folder + "/*.pt")
-            latest = max(all_weights, key=os.path.getctime)
-            print("loading model", latest)
-            data = torch.load(latest, map_location="cpu", weights_only=False)
-            checkpoint = data['model']
-            for key in list(checkpoint.keys()):
-                checkpoint[key.replace('model.', '')] = checkpoint[key]
-                del checkpoint[key]
-            model.load_state_dict(checkpoint, strict=False)
+        # Model loading is deferred to the end of __init__ to consolidate loading of weights,
+        # EMA, optimizer, and scheduler states from a single torch.load call post-prepare().
 
         num_verts = len(self.ds.tet_verts)
         channels = 4 + (3 if cfg.dataset.color else 0)
@@ -252,31 +244,7 @@ class Trainer(object):
         if self.accelerator.is_main_process:
             self.ema = EMA(self.model, beta=ema_decay, update_every=ema_update_every)
             self.ema.to(self.device)
-            if cfg.load_weights:
-                print("loading ema")
-                try:
-                    all_weights = glob(config_folder + "/*.pt")
-                    latest = max(all_weights, key=os.path.getctime)
-                    data = torch.load(latest, map_location="cpu", weights_only=False)
-                    # restore step counter so wandb x-axis continues correctly
-                    self.step = data.get('step', 0)
-                    checkpoint = data["ema"]
-                    self.ema.load_state_dict(checkpoint, strict=False)
-                    # Restore optimizer state (Adam moments) so LR does not reset
-                    if "opt" in data:
-                        self.opt.load_state_dict(data["opt"])
-                        print("[Trainer] Optimizer state restored.")
-                    # Stash scheduler state — applied after accelerator.prepare()
-                    # because prepare() wraps the scheduler object.
-                    self._resume_scheduler_state = data.get("scheduler", None)
-                    print(f"success — resuming from step {self.step}")
-                except Exception as e:
-                    print(f"ema loading failed: {e}")
-                    self.step = 0
-                    self._resume_scheduler_state = None
-            else:
-                self.step = 0
-                self._resume_scheduler_state = None
+            self.step = 0
         else:
             self.step = 0
 
@@ -290,13 +258,50 @@ class Trainer(object):
             self.model, self.opt, dl = self.accelerator.prepare(self.model, self.opt, dl)
         self.dl = cycle(dl)
 
-        # Restore LR scheduler position after accelerator.prepare() wraps it.
-        # Without this the warmup replays from step 0 even though self.step > 0.
-        _sched_state = getattr(self, '_resume_scheduler_state', None)
-        if _sched_state is not None and self.scheduler is not None:
-            self.scheduler.load_state_dict(_sched_state)
-            print(f"[Trainer] LR scheduler state restored (last_epoch={_sched_state.get('last_epoch', '?')}).")
-        self._resume_scheduler_state = None
+        # Consolidated loader: restores UVIT weights, EMA weights, optimizer, and
+        # scheduler state from a single file load post-prepare() to minimize VRAM usage.
+        if cfg.load_weights:
+            import gc
+            try:
+                all_weights = glob(config_folder + "/*.pt")
+                latest = max(all_weights, key=os.path.getctime)
+                print(f"[Trainer] Loading consolidated checkpoint from {latest}")
+                data = torch.load(latest, map_location="cpu", weights_only=False)
+
+                # 1. Restore UVIT model weights
+                checkpoint = data['model']
+                for key in list(checkpoint.keys()):
+                    checkpoint[key.replace('model.', '')] = checkpoint[key]
+                    del checkpoint[key]
+                raw_model = self.accelerator.unwrap_model(self.model)
+                raw_model.model.load_state_dict(checkpoint, strict=False)
+                print("[Trainer] Model state restored.")
+
+                # 2. Restore EMA (rank 0 only)
+                if self.accelerator.is_main_process:
+                    self.step = data.get('step', 0)
+                    checkpoint_ema = data["ema"]
+                    self.ema.load_state_dict(checkpoint_ema, strict=False)
+                    print("[Trainer] EMA state restored.")
+
+                # 3. Restore Optimizer state
+                if "opt" in data:
+                    self.opt.load_state_dict(data["opt"])
+                    print("[Trainer] Optimizer state restored.")
+
+                # 4. Restore Scheduler state
+                if self.scheduler is not None and "scheduler" in data:
+                    self.scheduler.load_state_dict(data["scheduler"])
+                    print(f"[Trainer] LR scheduler state restored (last_epoch={data['scheduler'].get('last_epoch', '?')}).")
+
+                print(f"[Trainer] Success — resumed from step {self.step}")
+                
+                # Delete temporary dictionary and collect garbage to free CPU memory
+                del data
+                gc.collect()
+            except Exception as e:
+                print(f"[Trainer] Resume failed: {e}")
+                self.step = 0
 
         # Broadcast self.step to non-main ranks so all processes start at the
         # same step (matters for multi-GPU runs with accelerate).
@@ -305,6 +310,9 @@ class Trainer(object):
             _step_t = torch.tensor(self.step, dtype=torch.long, device=self.device)
             _dist.broadcast(_step_t, src=0)
             self.step = int(_step_t.item())
+
+        # Clean CUDA memory cache before we start dataset loading / training loops
+        torch.cuda.empty_cache()
 
         print("[Trainer] Trainer initialization complete. Ready to start training.")
 

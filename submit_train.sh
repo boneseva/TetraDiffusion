@@ -129,6 +129,8 @@ PYXIS_FLAGS="--container-image=${CONTAINER} \
 export WANDB_MODE=online
 export WANDB_DIR="${REPO_DIR}"          # wandb will create ${REPO_DIR}/wandb/ here (no nesting)
 export TORCHDYNAMO_DISABLE=1
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 
 # Create required directories before srun so wandb/logging can write on startup.
 mkdir -p "${REPO_DIR}/logs" "${REPO_DIR}/wandb" "${REPO_DIR}/runs" || true
