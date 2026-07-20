@@ -106,7 +106,7 @@ submit() {
         else
             echo "  FAIL  $name — sbatch said: $output"
         fi
-        sleep 5   # stagger submissions — avoids SLURM scheduler storms and WandB init races
+        sleep 1   # stagger submissions — avoids SLURM scheduler storms and WandB init races
     fi
 }
 
