@@ -41,11 +41,12 @@ DATA_PATH="${SCRIPT_DIR}/data_test/preprocessed"
 CSV_PATH="${SCRIPT_DIR}/lib/all_urocell.csv"
 CATEGORY="lyso"
 # -- Default SLURM resources for fast sweeps -----------------
-# No GPU_MEM constraint — allows B200/B300 which have headroom for large batches.
-# Run scripts/submit_batch_probe.sh first to find the max batch size for your GPU.
+# Exclude 40GB/80GB nodes (aga, apl, ixh, axa, ana) to target the large memory ixb[1-8] nodes.
+# This allows running batch_size=16 directly without OOM.
 GRES_REQ="gpu:1"
 CONSTRAINT=""
-TIME_LIMIT="24:00:00"
+EXCLUDE="aga,apl,ixh,axa,ana"
+TIME_LIMIT="6:00:00"
 
 # -- Argument parsing ----------------------------------------
 DRY_RUN=false
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --time)         TIME_LIMIT="$2"; shift 2 ;;
         --gres)         GRES_REQ="$2"; shift 2 ;;
         --constraint)   CONSTRAINT="$2"; shift 2 ;;
+        --exclude)      EXCLUDE="$2"; shift 2 ;;
         --resume)       RESUME=true; shift ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
@@ -75,13 +77,15 @@ submit() {
     local name="$1"; shift
     local constraint_flag=()
     [ -n "${CONSTRAINT:-}" ] && constraint_flag=(--constraint="$CONSTRAINT")
-    local cmd=(sbatch --time="$TIME_LIMIT" --gres="$GRES_REQ" "${constraint_flag[@]}" "$SUBMIT" --name "$name" \
+    local exclude_flag=()
+    [ -n "${EXCLUDE:-}" ] && exclude_flag=(--exclude="$EXCLUDE")
+    local cmd=(sbatch --time="$TIME_LIMIT" --gres="$GRES_REQ" "${constraint_flag[@]}" "${exclude_flag[@]}" "$SUBMIT" --name "$name" \
         --data_path    "$DATA_PATH" \
         --csv_path     "$CSV_PATH" \
         --category     "$CATEGORY" \
         --num_steps    1000000 \
-        --batch_size   4 \
-        --ga           4 \
+        --batch_size   16 \
+        --ga           1 \
         --mixed_precision \
         --test_every   5000 \
         --wandb_project "TetraDiffusion_ablation" \
