@@ -79,15 +79,7 @@ if args.ds_path and os.path.isfile(args.ds_path):
     print(f'[probe] Loading existing ds.pth from {args.ds_path} (skipping GridPruning)...')
     ds = torch.load(args.ds_path, map_location='cpu', weights_only=False)
     ds.config = cfg
-    # Move all tensor attributes to the target device (mirrors what MeshLoader
-    # does during normal init when cuda_device is set).
-    ds.cuda_device = device
-    for _attr in list(vars(ds).keys()):
-        _val = getattr(ds, _attr)
-        if isinstance(_val, torch.Tensor):
-            setattr(ds, _attr, _val.to(device))
-        elif isinstance(_val, list) and _val and isinstance(_val[0], torch.Tensor):
-            setattr(ds, _attr, [t.to(device) for t in _val])
+    ds.cuda_device = device   # tell DDPM which device to use for internal tensors
 else:
     print('[probe] No --ds_path given, building MeshLoader (slow)...')
     from accelerate import Accelerator as _Accelerator
@@ -125,8 +117,8 @@ for bs in args.sizes:
 
         opt    = torch.optim.AdamW(diffusion.parameters(), lr=1e-4)
         scaler = GradScaler()
-        loader = DataLoader(ds, batch_size=bs, shuffle=True, num_workers=2,
-                            pin_memory=True)
+        loader = DataLoader(ds, batch_size=bs, shuffle=True,
+                            num_workers=0, pin_memory=False)
 
         peak_mb = 0
         for step, batch in enumerate(loader):
