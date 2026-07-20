@@ -35,9 +35,9 @@
 #SBATCH --output=/shared/home/eva.bones/TetraDiffusion/logs/slurm_%j_%x.out
 #SBATCH --error=/shared/home/eva.bones/TetraDiffusion/logs/slurm_%j_%x.err
 #SBATCH --gres=gpu:H100:1
-#SBATCH --cpus-per-task=12
-#SBATCH --mem=256G
-#SBATCH --time=48:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
+#SBATCH --time=24:00:00
 #SBATCH --partition=frida
 # Pyxis container (path resolved at runtime via REPO_DIR — see below)
 # NOTE: --container-image cannot use shell variables in #SBATCH lines,

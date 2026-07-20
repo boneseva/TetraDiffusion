@@ -60,9 +60,11 @@ class Trainer(object):
             with open(wandb_id_file) as f:
                 wandb_id = f.read().strip()
             wandb_resume = "allow"
+            print(f"[Trainer] WandB: resuming run id={wandb_id}")
         else:
             wandb_id = None
             wandb_resume = "never"
+            print("[Trainer] WandB: starting new run")
 
         run = wandb.init(
             project=getattr(cfg, 'wandb_project', 'TetraDiffusion'),
@@ -73,11 +75,14 @@ class Trainer(object):
             settings=wandb.Settings(init_timeout=300),
         )
 
-        # Always overwrite the saved run id so fresh runs replace stale ones
-        if self.accelerator.is_main_process:
+        # Only persist the run id on fresh starts.  During resume we never
+        # overwrite the file — if wandb silently creates a new run instead
+        # of resuming, the original id is preserved for future retries.
+        if self.accelerator.is_main_process and wandb_resume == "never":
             os.makedirs(config_folder, exist_ok=True)
             with open(wandb_id_file, "w") as f:
                 f.write(run.id)
+            print(f"[Trainer] WandB: saved run id={run.id} to {wandb_id_file}")
 
         if self.inference:
             self.ds = torch.load(os.path.join(config_folder, "ds.pth"), weights_only=False)
@@ -257,12 +262,21 @@ class Trainer(object):
                     self.step = data.get('step', 0)
                     checkpoint = data["ema"]
                     self.ema.load_state_dict(checkpoint, strict=False)
+                    # Restore optimizer state (Adam moments) so LR does not reset
+                    if "opt" in data:
+                        self.opt.load_state_dict(data["opt"])
+                        print("[Trainer] Optimizer state restored.")
+                    # Stash scheduler state — applied after accelerator.prepare()
+                    # because prepare() wraps the scheduler object.
+                    self._resume_scheduler_state = data.get("scheduler", None)
                     print(f"success — resuming from step {self.step}")
                 except Exception as e:
                     print(f"ema loading failed: {e}")
                     self.step = 0
+                    self._resume_scheduler_state = None
             else:
                 self.step = 0
+                self._resume_scheduler_state = None
         else:
             self.step = 0
 
@@ -275,6 +289,23 @@ class Trainer(object):
         else:
             self.model, self.opt, dl = self.accelerator.prepare(self.model, self.opt, dl)
         self.dl = cycle(dl)
+
+        # Restore LR scheduler position after accelerator.prepare() wraps it.
+        # Without this the warmup replays from step 0 even though self.step > 0.
+        _sched_state = getattr(self, '_resume_scheduler_state', None)
+        if _sched_state is not None and self.scheduler is not None:
+            self.scheduler.load_state_dict(_sched_state)
+            print(f"[Trainer] LR scheduler state restored (last_epoch={_sched_state.get('last_epoch', '?')}).")
+        self._resume_scheduler_state = None
+
+        # Broadcast self.step to non-main ranks so all processes start at the
+        # same step (matters for multi-GPU runs with accelerate).
+        import torch.distributed as _dist
+        if self.accelerator.num_processes > 1 and _dist.is_initialized():
+            _step_t = torch.tensor(self.step, dtype=torch.long, device=self.device)
+            _dist.broadcast(_step_t, src=0)
+            self.step = int(_step_t.item())
+
         print("[Trainer] Trainer initialization complete. Ready to start training.")
 
     @property
@@ -293,7 +324,15 @@ class Trainer(object):
         }
         if self.scheduler is not None:
             data['scheduler'] = self.scheduler.state_dict()
-        torch.save(data, str(self.config_folder + f'/model-{milestone}.pt'))
+        pt_path = str(self.config_folder + f'/model-{milestone}.pt')
+        torch.save(data, pt_path)
+        # Write a lightweight sidecar so checkpoints can be inspected
+        # (step, timestamp) without loading the full tensor file.
+        import json as _json, datetime as _dt
+        meta = {'step': self.step, 'milestone': milestone,
+                'saved_at': _dt.datetime.now().isoformat(timespec='seconds')}
+        with open(pt_path.replace('.pt', '.json'), 'w') as _f:
+            _json.dump(meta, _f)
 
     def get_lr(self, optimizer):
         for param_group in optimizer.param_groups:
