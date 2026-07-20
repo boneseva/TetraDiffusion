@@ -23,6 +23,11 @@ class _SkipTensors(pickle.Unpickler):
             return lambda *a, **k: None
         return super().find_class(module, name)
 
+    def persistent_load(self, pid):
+        # PyTorch stores tensor data as persistent IDs pointing to binary blobs.
+        # Return None so the unpickler can continue reading the dict structure.
+        return None
+
 
 def read_step(pt_path):
     """Return (step, saved_at, source) without loading tensors."""
