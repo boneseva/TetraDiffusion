@@ -33,19 +33,32 @@ def read_step(pt_path):
             meta = json.load(f)
         return meta.get('step', '?'), meta.get('saved_at', ''), 'json'
 
-    # Fallback: parse the pickle without materialising tensors.
-    # PyTorch .pt files are zip archives containing 'archive/data.pkl'.
+    mtime = datetime.datetime.fromtimestamp(
+        os.path.getmtime(pt_path)).isoformat(timespec='seconds')
+
+    # Try new zip-based format first (torch >= 1.6 default)
     try:
         import zipfile
         with zipfile.ZipFile(pt_path) as zf:
-            with zf.open('archive/data.pkl') as pkl:
-                data = _SkipTensors(pkl).load()
+            # find the data.pkl entry regardless of prefix
+            pkl_name = next((n for n in zf.namelist() if n.endswith('data.pkl')), None)
+            if pkl_name:
+                with zf.open(pkl_name) as pkl:
+                    data = _SkipTensors(pkl).load()
+                step = data.get('step', '?') if isinstance(data, dict) else '?'
+                return step, mtime, 'pt'
+    except Exception:
+        pass
+
+    # Fall back to legacy raw-pickle format
+    try:
+        with open(pt_path, 'rb') as f:
+            data = _SkipTensors(f).load()
         step = data.get('step', '?') if isinstance(data, dict) else '?'
-        mtime = datetime.datetime.fromtimestamp(
-            os.path.getmtime(pt_path)).isoformat(timespec='seconds')
         return step, mtime, 'pt'
     except Exception as e:
-        return f'ERR({e})', '', 'pt'
+        return f'ERR({e})', mtime, 'pt'
+
 
 
 def main():
