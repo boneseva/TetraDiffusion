@@ -293,6 +293,7 @@ class GaussianDiffusion(nn.Module):
 
         if offset_noise_strength > 0.:
             offset_noise = torch.randn(x_start[:, 0, :].shape, device=self.device)
+            offset_noise = offset_noise.clamp(-3., 3.)   # prevent 6-σ tail samples from overflowing v-target
             noise += offset_noise_strength * offset_noise.unsqueeze(1)
 
         x, log_snr = self.q_sample(x_start=x_start, times=times, noise=noise)

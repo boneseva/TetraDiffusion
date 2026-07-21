@@ -381,10 +381,11 @@ class MeshLoader(Dataset):
         return sdf, displacement, color
 
     def _normalize(self, sdf, displacement, color):
-
-        sdf = ((sdf - self.sdfs_min) / (self.sdfs_max - self.sdfs_min))
-        displacement = ((displacement - self.deform_min) / (self.deform_max - self.deform_min))
-        color = ((color - self.color_min) / (self.color_max - self.color_min))
+        # clamp denominators to avoid 0/0 = NaN when a channel has zero
+        # variance across the dataset (common on small organelle sets).
+        sdf          = (sdf          - self.sdfs_min)   / (self.sdfs_max   - self.sdfs_min).clamp(min=1e-6)
+        displacement = (displacement - self.deform_min) / (self.deform_max - self.deform_min).clamp(min=1e-6)
+        color        = (color        - self.color_min)  / (self.color_max  - self.color_min).clamp(min=1e-6)
 
         return sdf, displacement, color
 

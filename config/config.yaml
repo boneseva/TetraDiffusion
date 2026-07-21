@@ -1,4 +1,4 @@
-num_workers: 12
+num_workers: 7  # cpus-per-task(8) - 1 main process = 7; avoids CPU starvation warning
 load_weights: False
 use_local_sgd: False
 

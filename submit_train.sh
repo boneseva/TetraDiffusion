@@ -35,7 +35,7 @@
 #SBATCH --output=/shared/home/eva.bones/TetraDiffusion/logs/slurm_%j_%x.out
 #SBATCH --error=/shared/home/eva.bones/TetraDiffusion/logs/slurm_%j_%x.err
 #SBATCH --gres=gpu:H100:1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=8  # = num_workers(7) + 1 for main process; keep in sync with config.yaml
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
 #SBATCH --partition=frida

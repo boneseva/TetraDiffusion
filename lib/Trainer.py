@@ -397,6 +397,17 @@ class Trainer(object):
                             losses.append(loss.item())
                         self.accelerator.backward(loss)
 
+                        # Guard: skip optimizer step if loss is non-finite.
+                        # A single NaN/inf step permanently corrupts Adam's m/v
+                        # moment buffers, making recovery impossible.
+                        if not torch.isfinite(loss):
+                            if accelerator.is_main_process:
+                                print(f"[Trainer] WARNING: non-finite loss "
+                                      f"{loss.item()} at step {self.step} — "
+                                      f"skipping optimizer step to protect Adam state")
+                            self.opt.zero_grad()
+                            continue
+
                         grad_norm = None
                         if self.accelerator.sync_gradients:
                             grad_norm = accelerator.clip_grad_norm_(
