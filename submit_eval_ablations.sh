@@ -47,6 +47,9 @@ FILTER="abl_"
 POINTS=2048
 FSCORE_THRESH=0.05
 
+FORCE_FLAG=()
+EXTRA_ARGS=()
+
 # Parse flags
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,7 +58,8 @@ while [[ $# -gt 0 ]]; do
         --filter|-f)      FILTER="$2"; shift 2 ;;
         --points)         POINTS="$2"; shift 2 ;;
         --fscore_thresh)  FSCORE_THRESH="$2"; shift 2 ;;
-        *) echo "Unknown flag: $1" >&2; exit 1 ;;
+        --force)          FORCE_FLAG=(--force); shift ;;
+        *)                EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -67,6 +71,7 @@ echo "GT directory    : ${GT_DIR}"
 echo "Run Filter      : ${FILTER}"
 echo "Point cloud size: ${POINTS}"
 echo "F-Score threshold: ${FSCORE_THRESH}"
+echo "Force Re-eval   : ${FORCE_FLAG[*]:-false}"
 echo "Node            : $(hostname)"
 echo "Date            : $(date)"
 echo "================================================"
@@ -90,7 +95,9 @@ if [[ -f "$CONTAINER" && -n "${SLURM_JOB_ID:-}" ]]; then
         --gt_dir "$GT_DIR" \
         --filter "$FILTER" \
         --points "$POINTS" \
-        --fscore_thresh "$FSCORE_THRESH"
+        --fscore_thresh "$FSCORE_THRESH" \
+        "${FORCE_FLAG[@]}" \
+        "${EXTRA_ARGS[@]}"
 else
     echo "Launching Python evaluation using $(which python3)..."
     python3 evaluation/compare.py \
@@ -98,7 +105,9 @@ else
         --gt_dir "$GT_DIR" \
         --filter "$FILTER" \
         --points "$POINTS" \
-        --fscore_thresh "$FSCORE_THRESH"
+        --fscore_thresh "$FSCORE_THRESH" \
+        "${FORCE_FLAG[@]}" \
+        "${EXTRA_ARGS[@]}"
 fi
 
 echo ""
