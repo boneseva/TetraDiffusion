@@ -17,7 +17,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00
-#SBATCH --partition=amd
+#SBATCH --partition=frida
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -27,6 +27,16 @@ REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "$REPO_DIR"
 
 mkdir -p "${REPO_DIR}/logs" "${REPO_DIR}/evaluation/results" || true
+
+# Try to activate conda environment if available
+if command -v conda &> /dev/null; then
+    eval "$(conda shell.bash hook 2>/dev/null)" || true
+    conda activate tetradiffusion 2>/dev/null || conda activate base 2>/dev/null || true
+elif [[ -f "$HOME/miniconda3/bin/activate" ]]; then
+    source "$HOME/miniconda3/bin/activate" tetradiffusion 2>/dev/null || true
+elif [[ -f "$HOME/anaconda3/bin/activate" ]]; then
+    source "$HOME/anaconda3/bin/activate" tetradiffusion 2>/dev/null || true
+fi
 
 # Defaults matching ablation_fast_sweep.sh (UroCell lysosome dataset)
 RUNS_DIR="${REPO_DIR}/runs"
@@ -64,13 +74,30 @@ if [[ ! -d "$GT_DIR" ]]; then
     exit 1
 fi
 
-echo "Launching Python evaluation..."
-python3 evaluation/compare.py \
-    --runs_dir "$RUNS_DIR" \
-    --gt_dir "$GT_DIR" \
-    --filter "$FILTER" \
-    --points "$POINTS" \
-    --fscore_thresh "$FSCORE_THRESH"
+CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
+
+if [[ -f "$CONTAINER" && -n "${SLURM_JOB_ID:-}" ]]; then
+    echo "Launching Pyxis container evaluation..."
+    PYXIS_FLAGS="--container-image=${CONTAINER} \
+                 --container-mounts=${REPO_DIR}:${REPO_DIR} \
+                 --container-mount-home \
+                 --container-workdir=${REPO_DIR}"
+
+    srun $PYXIS_FLAGS python3 evaluation/compare.py \
+        --runs_dir "$RUNS_DIR" \
+        --gt_dir "$GT_DIR" \
+        --filter "$FILTER" \
+        --points "$POINTS" \
+        --fscore_thresh "$FSCORE_THRESH"
+else
+    echo "Launching Python evaluation using $(which python3)..."
+    python3 evaluation/compare.py \
+        --runs_dir "$RUNS_DIR" \
+        --gt_dir "$GT_DIR" \
+        --filter "$FILTER" \
+        --points "$POINTS" \
+        --fscore_thresh "$FSCORE_THRESH"
+fi
 
 echo ""
 echo "================================================"
