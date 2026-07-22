@@ -2,10 +2,24 @@ import numpy as np
 import scipy.spatial
 import trimesh
 
-def sample_point_cloud(mesh, num_points=2048):
+def normalize_point_cloud(pc):
+    """
+    Center point cloud at origin and scale to unit bounding sphere.
+    This ensures Chamfer Distance and F-Score are scale-invariant and standardized.
+    """
+    if len(pc) == 0:
+        return pc
+    centroid = np.mean(pc, axis=0)
+    pc_centered = pc - centroid
+    max_radius = np.max(np.linalg.norm(pc_centered, axis=1))
+    if max_radius > 1e-7:
+        return pc_centered / max_radius
+    return pc_centered
+
+def sample_point_cloud(mesh, num_points=2048, normalize=True):
     """
     Sample points uniformly from the surface of the mesh or point cloud.
-    If empty or face-less, samples from vertices or unit sphere.
+    If normalize=True, scales point cloud to unit bounding sphere.
     """
     if isinstance(mesh, trimesh.Scene):
         mesh = mesh.dump(concatenate=True)
@@ -20,18 +34,22 @@ def sample_point_cloud(mesh, num_points=2048):
 
     if isinstance(mesh, trimesh.PointCloud) or faces is None or len(faces) == 0:
         idx = np.random.choice(len(vertices), num_points, replace=True)
-        return vertices[idx]
+        pts = vertices[idx]
+    else:
+        try:
+            pts, _ = trimesh.sample.sample_surface(mesh, num_points)
+        except Exception:
+            idx = np.random.choice(len(vertices), num_points, replace=True)
+            pts = vertices[idx]
 
-    try:
-        points, _ = trimesh.sample.sample_surface(mesh, num_points)
-        return points
-    except Exception:
-        idx = np.random.choice(len(vertices), num_points, replace=True)
-        return vertices[idx]
+    if normalize:
+        pts = normalize_point_cloud(pts)
 
-def compute_chamfer_and_fscore(gen_points, gt_points, fscore_threshold=0.02):
+    return pts
+
+def compute_chamfer_and_fscore(gen_points, gt_points, fscore_threshold=0.05):
     """
-    Compute Bidirectional Chamfer Distance and F-Score between two point clouds.
+    Compute Bidirectional Chamfer Distance and F-Score between two normalized point clouds.
     """
     gen_tree = scipy.spatial.KDTree(gen_points)
     gt_tree = scipy.spatial.KDTree(gt_points)
@@ -44,11 +62,62 @@ def compute_chamfer_and_fscore(gen_points, gt_points, fscore_threshold=0.02):
     precision = np.mean(dist_gen_to_gt < fscore_threshold)
     recall = np.mean(dist_gt_to_gen < fscore_threshold)
     if precision + recall > 0:
-        fscore = float(2 * (precision * recall) / (precision + recall))
+        fscore = float(2.0 * (precision * recall) / (precision + recall))
     else:
         fscore = 0.0
         
     return cd, fscore
+
+def compute_coverage(gen_pcs, gt_pcs, fscore_threshold=0.05):
+    """
+    Coverage (COV): % of GT point clouds matched by at least one generated shape.
+    Higher is better (max 100.0%).
+    """
+    if len(gen_pcs) == 0 or len(gt_pcs) == 0:
+        return 0.0
+
+    matched_gt = set()
+    for g_pc in gen_pcs:
+        best_idx = -1
+        best_cd = float('inf')
+        for idx, t_pc in enumerate(gt_pcs):
+            cd, _ = compute_chamfer_and_fscore(g_pc, t_pc, fscore_threshold)
+            if cd < best_cd:
+                best_cd = cd
+                best_idx = idx
+        if best_idx >= 0:
+            matched_gt.add(best_idx)
+
+    return float(len(matched_gt) / len(gt_pcs)) * 100.0
+
+def compute_1nn_accuracy(gen_pcs, gt_pcs, fscore_threshold=0.05):
+    """
+    1-NN Classifier Accuracy between generated set and GT set.
+    Ideal score is 50.0% (50.0 = indistinguishable from real data).
+    """
+    N = len(gen_pcs)
+    M = len(gt_pcs)
+    if N == 0 or M == 0:
+        return 0.0
+
+    all_pcs = list(gen_pcs) + list(gt_pcs)
+    labels = [0] * N + [1] * M
+    K = N + M
+
+    D = np.full((K, K), float('inf'))
+    for i in range(K):
+        for j in range(i + 1, K):
+            cd, _ = compute_chamfer_and_fscore(all_pcs[i], all_pcs[j], fscore_threshold)
+            D[i, j] = cd
+            D[j, i] = cd
+
+    correct = 0
+    for i in range(K):
+        nn_idx = np.argmin(D[i])
+        if labels[nn_idx] == labels[i]:
+            correct += 1
+
+    return float(correct / K) * 100.0
 
 def compute_sphericity(mesh):
     """

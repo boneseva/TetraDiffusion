@@ -6,14 +6,22 @@ import argparse
 import numpy as np
 import pandas as pd
 import trimesh
-from metrics import sample_point_cloud, compute_chamfer_and_fscore, compute_sphericity, compute_mesh_quality
+from metrics import (
+    sample_point_cloud,
+    compute_chamfer_and_fscore,
+    compute_sphericity,
+    compute_mesh_quality,
+    compute_coverage,
+    compute_1nn_accuracy,
+    normalize_point_cloud
+)
 
 def log(msg):
     """Print immediately without line buffering for SLURM tail -f tracking."""
     print(msg, flush=True)
 
 def load_gt_point_clouds(gt_dir, num_points=2048):
-    """Load all ground truth meshes and sample point clouds from them."""
+    """Load all ground truth meshes and sample normalized point clouds from them."""
     gt_files = glob.glob(os.path.join(gt_dir, "*.obj"))
     if not gt_files:
         log(f"WARNING: No ground truth OBJ files found in {gt_dir}")
@@ -27,7 +35,7 @@ def load_gt_point_clouds(gt_dir, num_points=2048):
             mesh = trimesh.load(f)
             if isinstance(mesh, trimesh.Scene):
                 mesh = mesh.dump(concatenate=True)
-            pc = sample_point_cloud(mesh, num_points)
+            pc = sample_point_cloud(mesh, num_points, normalize=True)
             gt_pcs.append(pc)
         except Exception as e:
             log(f"  Error loading GT file {f}: {e}")
@@ -35,7 +43,7 @@ def load_gt_point_clouds(gt_dir, num_points=2048):
             log(f"  GT Progress: {i}/{len(gt_files)} loaded ({time.time() - t0:.1f}s)")
     return gt_pcs
 
-def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
+def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.05):
     """Calculate average metrics for all generated meshes in a directory."""
     gen_files = sorted(glob.glob(os.path.join(run_dir, "*.obj")))
     if not gen_files:
@@ -44,6 +52,7 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
     total_files = len(gen_files)
     t0 = time.time()
     
+    gen_pcs = []
     cds = []
     fscores = []
     sphericities = []
@@ -67,8 +76,9 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
             cc_counts.append(qual["connected_components"])
             degen_fractions.append(qual["degenerate_faces_fraction"])
             
-            # 2. Distribution / Chamfer Metrics
-            gen_pc = sample_point_cloud(mesh, num_points)
+            # 2. Distribution / Chamfer Metrics (Normalized to Unit Sphere)
+            gen_pc = sample_point_cloud(mesh, num_points, normalize=True)
+            gen_pcs.append(gen_pc)
             
             best_cd = float('inf')
             best_f = 0.0
@@ -87,7 +97,7 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
         except Exception as e:
             log(f"  Warning: Error evaluating mesh {os.path.basename(f)}: {e}")
             
-        if i % 10 == 0 or i == total_files:
+        if i % 20 == 0 or i == total_files:
             elapsed = time.time() - t0
             speed = i / max(elapsed, 0.001)
             eta = (total_files - i) / max(speed, 0.001)
@@ -95,10 +105,17 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
             
     if not cds:
         return None
+
+    # Compute dataset-level 3D generative benchmarks (Coverage & 1-NN Accuracy)
+    log("    - Computing Coverage (COV) and 1-NN Accuracy...")
+    cov = compute_coverage(gen_pcs, gt_pcs, fscore_threshold)
+    onn_acc = compute_1nn_accuracy(gen_pcs, gt_pcs, fscore_threshold)
         
     return {
         "CD_MMD": np.mean(cds),
         "FScore_MMD": np.mean(fscores),
+        "COV (%)": cov,
+        "1NN_Acc (%)": onn_acc,
         "Sphericity": np.mean(sphericities),
         "Watertight_Ratio": watertight_count / total_files,
         "Connected_Components": np.mean(cc_counts),
@@ -110,7 +127,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate and compare generated 3D meshes to GT database.")
     parser.add_argument("--runs_dir", type=str, default="../runs", help="Directory where training runs are stored.")
     parser.add_argument("--gt_dir", type=str, default="../data_test/organelles/lyso", help="Directory with GT meshes.")
-    parser.add_argument("--fscore_thresh", type=float, default=0.02, help="Threshold distance for F-Score.")
+    parser.add_argument("--fscore_thresh", type=float, default=0.05, help="Threshold distance for F-Score (unit sphere scale).")
     parser.add_argument("--points", type=int, default=2048, help="Number of points to sample from each mesh.")
     parser.add_argument("--filter", type=str, default=None, help="Pattern/prefix to filter run directories (e.g., 'abl_' or '*bio*').")
     args = parser.parse_args()
@@ -169,7 +186,7 @@ def main():
         
         if metrics:
             run_results[rel_path] = metrics
-            log(f"  ✓ Finished '{rel_path}' in {run_time:.1f}s | CD_MMD: {metrics['CD_MMD']:.6f} | FScore: {metrics['FScore_MMD']:.4f}\n")
+            log(f"  ✓ Finished '{rel_path}' in {run_time:.1f}s | CD_MMD: {metrics['CD_MMD']:.6f} | FScore: {metrics['FScore_MMD']:.4f} | COV: {metrics['COV (%)']:.1f}% | 1NN: {metrics['1NN_Acc (%)']:.1f}%\n")
         else:
             log(f"  ✗ Failed/Empty metrics for '{rel_path}' in {run_time:.1f}s\n")
             
@@ -196,8 +213,10 @@ def main():
         f.write("## Runs Comparison Table\n\n")
         f.write(df.to_markdown() + "\n\n")
         f.write("### Metrics Reference:\n")
-        f.write("* **CD_MMD**: Minimum Modified Chamfer Distance (lower = closer to GT shape distribution).\n")
-        f.write("* **FScore_MMD**: F-Score at threshold (higher = better surface coverage accuracy).\n")
+        f.write("* **CD_MMD**: Minimum Modified Chamfer Distance on unit-sphere normalized point clouds (lower = closer to GT shape distribution).\n")
+        f.write("* **FScore_MMD**: F-Score at threshold 0.05 (higher = better surface coverage accuracy).\n")
+        f.write("* **COV (%)**: Coverage percentage (higher = better diversity, max 100%).\n")
+        f.write("* **1NN_Acc (%)**: 1-Nearest Neighbor classifier accuracy (ideal = 50.0%).\n")
         f.write("* **Sphericity**: Volume-to-surface compactness ratio (1.0 = perfect sphere, ideal for Lysosomes).\n")
         f.write("* **Watertight_Ratio**: Fraction of meshes that are closed/watertight (higher = cleaner geometry).\n")
         f.write("* **Connected_Components**: Average number of disconnected mesh parts (ideal = 1.0; >1.0 indicates background noise/floaters).\n")

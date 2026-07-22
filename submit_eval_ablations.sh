@@ -45,7 +45,7 @@ RUNS_DIR="${REPO_DIR}/runs"
 GT_DIR="${REPO_DIR}/data_test/organelles/lyso"
 FILTER="abl_"
 POINTS=2048
-FSCORE_THRESH=0.02
+FSCORE_THRESH=0.05
 
 # Parse flags
 while [[ $# -gt 0 ]]; do
