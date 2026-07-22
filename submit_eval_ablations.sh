@@ -16,7 +16,7 @@
 #SBATCH --error=/shared/home/eva.bones/TetraDiffusion/logs/slurm_eval_%j_%x.err
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --partition=frida
 # ──────────────────────────────────────────────────────────────────────────────
 
