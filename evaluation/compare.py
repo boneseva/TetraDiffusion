@@ -133,6 +133,10 @@ def main():
             if rel_path == ".":
                 continue
                 
+            # Only evaluate dedicated inference directories (skip training validation samples)
+            if "inference_" not in rel_path:
+                continue
+
             if args.filter:
                 import fnmatch
                 top_dir = rel_path.split(os.sep)[0]
