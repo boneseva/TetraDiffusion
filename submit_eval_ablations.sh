@@ -64,30 +64,13 @@ if [[ ! -d "$GT_DIR" ]]; then
     exit 1
 fi
 
-CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
-
-if [[ -f "$CONTAINER" && -n "${SLURM_JOB_ID:-}" ]]; then
-    echo "Launching Pyxis container evaluation..."
-    PYXIS_FLAGS="--container-image=${CONTAINER} \
-                 --container-mounts=${REPO_DIR}:${REPO_DIR} \
-                 --container-mount-home \
-                 --container-workdir=${REPO_DIR}"
-
-    srun $PYXIS_FLAGS python3 evaluation/compare.py \
-        --runs_dir "$RUNS_DIR" \
-        --gt_dir "$GT_DIR" \
-        --filter "$FILTER" \
-        --points "$POINTS" \
-        --fscore_thresh "$FSCORE_THRESH"
-else
-    echo "Launching Python evaluation..."
-    python3 evaluation/compare.py \
-        --runs_dir "$RUNS_DIR" \
-        --gt_dir "$GT_DIR" \
-        --filter "$FILTER" \
-        --points "$POINTS" \
-        --fscore_thresh "$FSCORE_THRESH"
-fi
+echo "Launching Python evaluation..."
+python3 evaluation/compare.py \
+    --runs_dir "$RUNS_DIR" \
+    --gt_dir "$GT_DIR" \
+    --filter "$FILTER" \
+    --points "$POINTS" \
+    --fscore_thresh "$FSCORE_THRESH"
 
 echo ""
 echo "================================================"
