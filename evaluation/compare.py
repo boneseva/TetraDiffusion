@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import glob
+import json
 import argparse
 import numpy as np
 import pandas as pd
@@ -19,6 +20,45 @@ from metrics import (
 def log(msg):
     """Print immediately without line buffering for SLURM tail -f tracking."""
     print(msg, flush=True)
+
+def save_intermediate_results(run_results, cache_file="results/cache_evaluation.json"):
+    """
+    Save accumulated metrics to JSON cache, CSV, and Markdown live after each run.
+    Ensures work is never lost if a job is cancelled or interrupted.
+    """
+    if not run_results:
+        return
+
+    os.makedirs("results", exist_ok=True)
+
+    # 1. Save JSON cache for instant resumption
+    try:
+        with open(cache_file, "w") as f:
+            json.dump(run_results, f, indent=2)
+    except Exception as e:
+        log(f"Warning: Could not update JSON cache: {e}")
+
+    # 2. Save CSV spreadsheet
+    df = pd.DataFrame.from_dict(run_results, orient='index')
+    df = df.sort_values(by="CD_MMD", ascending=True)
+    df.to_csv("results/evaluation_summary.csv")
+
+    # 3. Save Markdown summary table
+    with open("results/evaluation_summary.md", "w") as f:
+        f.write("# TetraDiffusion Ablation Evaluation Summary\n\n")
+        f.write("Last updated: " + pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S') + "\n\n")
+        f.write(f"Evaluated runs: {len(run_results)}\n\n")
+        f.write("## Runs Comparison Table\n\n")
+        f.write(df.to_markdown() + "\n\n")
+        f.write("### Metrics Reference:\n")
+        f.write("* **CD_MMD**: Minimum Modified Chamfer Distance on unit-sphere normalized point clouds (lower = closer to GT shape distribution).\n")
+        f.write("* **FScore_MMD**: F-Score at threshold 0.05 (higher = better surface coverage accuracy).\n")
+        f.write("* **COV (%)**: Coverage percentage (higher = better diversity, max 100%).\n")
+        f.write("* **1NN_Acc (%)**: 1-Nearest Neighbor classifier accuracy (ideal = 50.0%).\n")
+        f.write("* **Sphericity**: Volume-to-surface compactness ratio (1.0 = perfect sphere, ideal for Lysosomes).\n")
+        f.write("* **Watertight_Ratio**: Fraction of meshes that are closed/watertight (higher = cleaner geometry).\n")
+        f.write("* **Connected_Components**: Average number of disconnected mesh parts (ideal = 1.0; >1.0 indicates background noise/floaters).\n")
+        f.write("* **Degenerate_Faces**: Fraction of faces with near-zero area (lower = better mesh quality).\n")
 
 def load_gt_point_clouds(gt_dir, num_points=2048):
     """Load all ground truth meshes and sample normalized point clouds from them."""
@@ -106,7 +146,6 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.05):
     if not cds:
         return None
 
-    # Compute dataset-level 3D generative benchmarks (Coverage & 1-NN Accuracy)
     log("    - Computing Coverage (COV) and 1-NN Accuracy...")
     cov = compute_coverage(gen_pcs, gt_pcs, fscore_threshold)
     onn_acc = compute_1nn_accuracy(gen_pcs, gt_pcs, fscore_threshold)
@@ -130,6 +169,7 @@ def main():
     parser.add_argument("--fscore_thresh", type=float, default=0.05, help="Threshold distance for F-Score (unit sphere scale).")
     parser.add_argument("--points", type=int, default=2048, help="Number of points to sample from each mesh.")
     parser.add_argument("--filter", type=str, default=None, help="Pattern/prefix to filter run directories (e.g., 'abl_' or '*bio*').")
+    parser.add_argument("--force", action="store_true", help="Force re-evaluating runs even if cached in results/cache_evaluation.json.")
     args = parser.parse_args()
     
     # 1. Load Ground Truth datasets
@@ -170,15 +210,35 @@ def main():
         return
 
     log(f"Found {len(candidate_dirs)} directory(ies) with meshes to evaluate.")
+    
+    # Load cache if available
+    os.makedirs("results", exist_ok=True)
+    cache_file = "results/cache_evaluation.json"
+    run_results = {}
+    
+    if os.path.exists(cache_file) and not args.force:
+        try:
+            with open(cache_file, "r") as f:
+                run_results = json.load(f)
+            log(f"Loaded {len(run_results)} previously cached run evaluation(s) from {cache_file}.")
+        except Exception as e:
+            log(f"Warning: Failed to load cache file {cache_file}: {e}")
+            run_results = {}
+
     log("-" * 80)
     for idx, (root, rel_path, count) in enumerate(candidate_dirs, 1):
-        log(f"  [{idx}/{len(candidate_dirs)}] {rel_path} ({count} meshes)")
+        status = " (CACHED)" if rel_path in run_results else ""
+        log(f"  [{idx}/{len(candidate_dirs)}] {rel_path} ({count} meshes){status}")
     log("-" * 80 + "\n")
 
-    run_results = {}
     total_start = time.time()
+    evaluated_count = 0
 
     for idx, (root, rel_path, count) in enumerate(candidate_dirs, 1):
+        if rel_path in run_results and not args.force:
+            log(f"[{idx}/{len(candidate_dirs)}] Skipping cached '{rel_path}'")
+            continue
+
         log(f"[{idx}/{len(candidate_dirs)}] Evaluating '{rel_path}' ({count} meshes)...")
         run_start = time.time()
         metrics = evaluate_run(root, gt_pcs, num_points=args.points, fscore_threshold=args.fscore_thresh)
@@ -186,14 +246,18 @@ def main():
         
         if metrics:
             run_results[rel_path] = metrics
+            evaluated_count += 1
             log(f"  ✓ Finished '{rel_path}' in {run_time:.1f}s | CD_MMD: {metrics['CD_MMD']:.6f} | FScore: {metrics['FScore_MMD']:.4f} | COV: {metrics['COV (%)']:.1f}% | 1NN: {metrics['1NN_Acc (%)']:.1f}%\n")
+            # Live incremental save to disk after every completed run!
+            save_intermediate_results(run_results, cache_file=cache_file)
+            log(f"    [Saved live checkpoint to results/evaluation_summary.md and .csv]")
         else:
             log(f"  ✗ Failed/Empty metrics for '{rel_path}' in {run_time:.1f}s\n")
             
     total_time = time.time() - total_start
-    log(f"Evaluation complete for {len(run_results)} run(s) in {total_time:.1f} seconds.")
+    log(f"Evaluation complete for {len(run_results)} run(s) ({evaluated_count} new) in {total_time:.1f} seconds.")
 
-    # 3. Format & print results
+    # 3. Final format & print results table
     df = pd.DataFrame.from_dict(run_results, orient='index')
     df = df.sort_values(by="CD_MMD", ascending=True)
     
@@ -202,29 +266,11 @@ def main():
     log("="*80)
     log(df.to_string())
     log("="*80)
-    
-    # Save results to CSV & Markdown
-    os.makedirs("results", exist_ok=True)
-    df.to_csv("results/evaluation_summary.csv")
-    
-    with open("results/evaluation_summary.md", "w") as f:
-        f.write("# TetraDiffusion Ablation Evaluation Summary\n\n")
-        f.write("Generated on: " + pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S') + "\n\n")
-        f.write("## Runs Comparison Table\n\n")
-        f.write(df.to_markdown() + "\n\n")
-        f.write("### Metrics Reference:\n")
-        f.write("* **CD_MMD**: Minimum Modified Chamfer Distance on unit-sphere normalized point clouds (lower = closer to GT shape distribution).\n")
-        f.write("* **FScore_MMD**: F-Score at threshold 0.05 (higher = better surface coverage accuracy).\n")
-        f.write("* **COV (%)**: Coverage percentage (higher = better diversity, max 100%).\n")
-        f.write("* **1NN_Acc (%)**: 1-Nearest Neighbor classifier accuracy (ideal = 50.0%).\n")
-        f.write("* **Sphericity**: Volume-to-surface compactness ratio (1.0 = perfect sphere, ideal for Lysosomes).\n")
-        f.write("* **Watertight_Ratio**: Fraction of meshes that are closed/watertight (higher = cleaner geometry).\n")
-        f.write("* **Connected_Components**: Average number of disconnected mesh parts (ideal = 1.0; >1.0 indicates background noise/floaters).\n")
-        f.write("* **Degenerate_Faces**: Fraction of faces with near-zero area (lower = better mesh quality).\n")
 
-    log("\nResults successfully saved to:")
+    log("\nResults successfully saved and up to date at:")
     log("  - evaluation/results/evaluation_summary.csv")
     log("  - evaluation/results/evaluation_summary.md")
+    log("  - evaluation/results/cache_evaluation.json")
 
 if __name__ == '__main__':
     main()
