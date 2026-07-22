@@ -421,9 +421,12 @@ def main():
     run_name = os.path.basename(os.path.normpath(args.run_dir))
     html_page = build_interactive_html(shapes_data, coords, nn_indices, run_name)
 
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    results_dir = os.path.join(script_dir, "results")
+    os.makedirs(results_dir, exist_ok=True)
+
     out_name = args.output or f"shape_space_interactive_{run_name}.html"
-    os.makedirs("results", exist_ok=True)
-    out_path = os.path.join("results", out_name)
+    out_path = os.path.join(results_dir, out_name)
 
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html_page)

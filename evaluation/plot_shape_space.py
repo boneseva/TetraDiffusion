@@ -223,9 +223,12 @@ def main():
 
     plt.tight_layout()
 
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    results_dir = os.path.join(script_dir, "results")
+    os.makedirs(results_dir, exist_ok=True)
+
     out_name = args.output or f"shape_space_actual_shapes_{run_name}.png"
-    os.makedirs("results", exist_ok=True)
-    out_path = os.path.join("results", out_name)
+    out_path = os.path.join(results_dir, out_name)
     fig.savefig(out_path, dpi=300, bbox_inches='tight')
     pdf_path = out_path.replace('.png', '.pdf')
     fig.savefig(pdf_path, bbox_inches='tight')
