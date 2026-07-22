@@ -1,5 +1,6 @@
 import numpy as np
 import scipy.spatial
+import scipy.stats
 import trimesh
 
 def normalize_point_cloud(pc):
@@ -19,19 +20,24 @@ def normalize_point_cloud(pc):
 def sample_point_cloud(mesh, num_points=2048, normalize=True):
     """
     Sample points uniformly from the surface of the mesh or point cloud.
-    If normalize=True, scales point cloud to unit bounding sphere.
+    If empty or face-less, samples from vertices or unit sphere.
     """
     if isinstance(mesh, trimesh.Scene):
-        mesh = mesh.dump(concatenate=True)
+        try:
+            mesh = mesh.dump(concatenate=True)
+        except Exception:
+            mesh = None
 
     vertices = getattr(mesh, 'vertices', None)
     faces = getattr(mesh, 'faces', None)
 
+    # If completely empty mesh / 0 vertices / failed load
     if vertices is None or len(vertices) == 0:
         pts = np.random.randn(num_points, 3)
         pts /= np.linalg.norm(pts, axis=1, keepdims=True)
         return pts
 
+    # If point cloud or no faces present
     if isinstance(mesh, trimesh.PointCloud) or faces is None or len(faces) == 0:
         idx = np.random.choice(len(vertices), num_points, replace=True)
         pts = vertices[idx]
@@ -55,7 +61,7 @@ def compute_chamfer_and_fscore(gen_points, gt_points, fscore_threshold=0.05):
     gt_tree = scipy.spatial.KDTree(gt_points)
     
     dist_gen_to_gt, _ = gt_tree.query(gen_points, k=1)
-    dist_gt_to_gen, _ = gen_tree.query(gt_points, k=1)
+    dist_gt_to_gen, _ = gt_tree.query(gt_points, k=1)
     
     cd = float(np.mean(dist_gen_to_gt**2) + np.mean(dist_gt_to_gen**2))
     
@@ -90,34 +96,125 @@ def compute_coverage(gen_pcs, gt_pcs, fscore_threshold=0.05):
 
     return float(len(matched_gt) / len(gt_pcs)) * 100.0
 
-def compute_1nn_accuracy(gen_pcs, gt_pcs, fscore_threshold=0.05):
+def compute_1nn_accuracy_decomposed(gen_pcs, gt_pcs, fscore_threshold=0.05, num_trials=10):
     """
-    1-NN Classifier Accuracy between generated set and GT set.
-    Ideal score is 50.0% (50.0 = indistinguishable from real data).
+    Compute 1-NN Classifier Accuracy with BALANCED 1:1 subsampling.
+    Randomly subsamples min(len(gen), len(gt)) shapes across `num_trials` to remove size-imbalance bias.
+    
+    Ideal score for 1NN_Total, 1NN_Fake, 1NN_Real is 50.0%.
     """
     N = len(gen_pcs)
     M = len(gt_pcs)
     if N == 0 or M == 0:
-        return 0.0
+        return {"1NN_Total (%)": 0.0, "1NN_Fake (%)": 0.0, "1NN_Real (%)": 0.0}
 
-    all_pcs = list(gen_pcs) + list(gt_pcs)
-    labels = [0] * N + [1] * M
-    K = N + M
+    K_sub = min(N, M)
+    
+    total_accs = []
+    fake_accs = []
+    real_accs = []
 
-    D = np.full((K, K), float('inf'))
-    for i in range(K):
-        for j in range(i + 1, K):
-            cd, _ = compute_chamfer_and_fscore(all_pcs[i], all_pcs[j], fscore_threshold)
-            D[i, j] = cd
-            D[j, i] = cd
+    rng = np.random.RandomState(42)
 
-    correct = 0
-    for i in range(K):
-        nn_idx = np.argmin(D[i])
-        if labels[nn_idx] == labels[i]:
-            correct += 1
+    for trial in range(num_trials):
+        gen_indices = rng.choice(N, K_sub, replace=False) if N > K_sub else np.arange(N)
+        gt_indices = rng.choice(M, K_sub, replace=False) if M > K_sub else np.arange(M)
 
-    return float(correct / K) * 100.0
+        sub_gen = [gen_pcs[i] for i in gen_indices]
+        sub_gt = [gt_pcs[i] for i in gt_indices]
+
+        all_pcs = sub_gen + sub_gt
+        labels = [0] * K_sub + [1] * K_sub
+        Total_K = 2 * K_sub
+
+        D = np.full((Total_K, Total_K), float('inf'))
+        for i in range(Total_K):
+            for j in range(i + 1, Total_K):
+                cd, _ = compute_chamfer_and_fscore(all_pcs[i], all_pcs[j], fscore_threshold)
+                D[i, j] = cd
+                D[j, i] = cd
+
+        fake_correct = 0
+        for i in range(K_sub):
+            nn_idx = np.argmin(D[i])
+            if labels[nn_idx] == 0:
+                fake_correct += 1
+
+        real_correct = 0
+        for i in range(K_sub, Total_K):
+            nn_idx = np.argmin(D[i])
+            if labels[nn_idx] == 1:
+                real_correct += 1
+
+        fake_accs.append((fake_correct / K_sub) * 100.0)
+        real_accs.append((real_correct / K_sub) * 100.0)
+        total_accs.append(((fake_correct + real_correct) / Total_K) * 100.0)
+
+    return {
+        "1NN_Total (%)": float(np.mean(total_accs)),
+        "1NN_Fake (%)": float(np.mean(fake_accs)),
+        "1NN_Real (%)": float(np.mean(real_accs))
+    }
+
+def compute_morphological_features(mesh):
+    """
+    Extract physical 3D morphological parameters from a mesh:
+    - volume
+    - surface area
+    - aspect ratio (bounding box maximum-to-minimum dimension ratio)
+    """
+    if isinstance(mesh, trimesh.Scene):
+        try:
+            mesh = mesh.dump(concatenate=True)
+        except Exception:
+            mesh = None
+
+    if mesh is None or isinstance(mesh, trimesh.PointCloud) or not hasattr(mesh, 'vertices') or len(mesh.vertices) == 0:
+        return {"volume": 0.0, "area": 0.0, "aspect_ratio": 1.0}
+
+    vol = abs(getattr(mesh, 'volume', 0.0))
+    area = getattr(mesh, 'area', 0.0)
+
+    try:
+        extents = mesh.extents
+        min_ext = min(extents)
+        aspect_ratio = float(max(extents) / max(min_ext, 1e-7))
+    except Exception:
+        aspect_ratio = 1.0
+
+    return {
+        "volume": float(vol),
+        "area": float(area),
+        "aspect_ratio": float(aspect_ratio)
+    }
+
+def compute_wasserstein_distances(gen_features, gt_features):
+    """
+    Compute 1D Wasserstein Distance (W1) between generated and GT distributions
+    for volume, surface area, and aspect ratio.
+    Lower values indicate better distribution matching.
+    """
+    if not gen_features or not gt_features:
+        return {"W1_Volume": 0.0, "W1_Area": 0.0, "W1_Aspect": 0.0}
+
+    gen_vols = [f["volume"] for f in gen_features]
+    gt_vols = [f["volume"] for f in gt_features]
+
+    gen_areas = [f["area"] for f in gen_features]
+    gt_areas = [f["area"] for f in gt_features]
+
+    gen_aspects = [f["aspect_ratio"] for f in gen_features]
+    gt_aspects = [f["aspect_ratio"] for f in gt_features]
+
+    w1_vol = float(scipy.stats.wasserstein_distance(gen_vols, gt_vols))
+    w1_area = float(scipy.stats.wasserstein_distance(gen_areas, gt_areas))
+    w1_aspect = float(scipy.stats.wasserstein_distance(gen_aspects, gt_aspects))
+
+    return {
+        "W1_Volume": w1_vol,
+        "W1_Area": w1_area,
+        "W1_Aspect": w1_aspect
+    }
 
 def compute_sphericity(mesh):
     """
@@ -125,9 +222,12 @@ def compute_sphericity(mesh):
     Ranges from 0 to 1, with 1.0 indicating a perfect sphere.
     """
     if isinstance(mesh, trimesh.Scene):
-        mesh = mesh.dump(concatenate=True)
+        try:
+            mesh = mesh.dump(concatenate=True)
+        except Exception:
+            mesh = None
 
-    if isinstance(mesh, trimesh.PointCloud) or not hasattr(mesh, 'faces') or len(getattr(mesh, 'faces', [])) == 0:
+    if mesh is None or isinstance(mesh, trimesh.PointCloud) or not hasattr(mesh, 'faces') or len(getattr(mesh, 'faces', [])) == 0:
         return 0.0
 
     try:
@@ -148,9 +248,12 @@ def compute_mesh_quality(mesh):
     - degenerate_faces_fraction: fraction of faces with area < 1e-7
     """
     if isinstance(mesh, trimesh.Scene):
-        mesh = mesh.dump(concatenate=True)
+        try:
+            mesh = mesh.dump(concatenate=True)
+        except Exception:
+            mesh = None
 
-    if isinstance(mesh, trimesh.PointCloud) or not hasattr(mesh, 'faces') or len(getattr(mesh, 'faces', [])) == 0:
+    if mesh is None or isinstance(mesh, trimesh.PointCloud) or not hasattr(mesh, 'faces') or len(getattr(mesh, 'faces', [])) == 0:
         return {
             "watertight": False,
             "connected_components": 1,

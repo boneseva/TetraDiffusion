@@ -13,7 +13,9 @@ from metrics import (
     compute_sphericity,
     compute_mesh_quality,
     compute_coverage,
-    compute_1nn_accuracy,
+    compute_1nn_accuracy_decomposed,
+    compute_morphological_features,
+    compute_wasserstein_distances,
     normalize_point_cloud
 )
 
@@ -54,21 +56,27 @@ def save_intermediate_results(run_results, cache_file="results/cache_evaluation.
         f.write("* **CD_MMD**: Minimum Modified Chamfer Distance on unit-sphere normalized point clouds (lower = closer to GT shape distribution).\n")
         f.write("* **FScore_MMD**: F-Score at threshold 0.05 (higher = better surface coverage accuracy).\n")
         f.write("* **COV (%)**: Coverage percentage (higher = better diversity, max 100%).\n")
-        f.write("* **1NN_Acc (%)**: 1-Nearest Neighbor classifier accuracy (ideal = 50.0%).\n")
+        f.write("* **1NN_Total (%)**: Overall 1-Nearest Neighbor classifier accuracy (ideal = 50.0%).\n")
+        f.write("* **1NN_Fake (%)**: % of generated shapes whose 1-NN is also generated (ideal = 50.0%, precision indicator).\n")
+        f.write("* **1NN_Real (%)**: % of real GT shapes whose 1-NN is also real (ideal = 50.0%, recall/coverage indicator).\n")
+        f.write("* **W1_Volume**: Wasserstein distance between GT and generated volume distributions (lower = better physical size calibration).\n")
+        f.write("* **W1_Area**: Wasserstein distance between GT and generated surface area distributions (lower = better surface scaling).\n")
+        f.write("* **W1_Aspect**: Wasserstein distance between GT and generated aspect ratio distributions (lower = better elongation alignment).\n")
         f.write("* **Sphericity**: Volume-to-surface compactness ratio (1.0 = perfect sphere, ideal for Lysosomes).\n")
         f.write("* **Watertight_Ratio**: Fraction of meshes that are closed/watertight (higher = cleaner geometry).\n")
         f.write("* **Connected_Components**: Average number of disconnected mesh parts (ideal = 1.0; >1.0 indicates background noise/floaters).\n")
         f.write("* **Degenerate_Faces**: Fraction of faces with near-zero area (lower = better mesh quality).\n")
 
-def load_gt_point_clouds(gt_dir, num_points=2048):
-    """Load all ground truth meshes and sample normalized point clouds from them."""
+def load_gt_data(gt_dir, num_points=2048):
+    """Load all ground truth meshes, extract morphological features, and sample normalized point clouds."""
     gt_files = glob.glob(os.path.join(gt_dir, "*.obj"))
     if not gt_files:
         log(f"WARNING: No ground truth OBJ files found in {gt_dir}")
-        return []
+        return [], []
         
     log(f"Loading {len(gt_files)} ground truth meshes from {gt_dir}...")
     gt_pcs = []
+    gt_features = []
     t0 = time.time()
     for i, f in enumerate(gt_files, 1):
         try:
@@ -76,14 +84,16 @@ def load_gt_point_clouds(gt_dir, num_points=2048):
             if isinstance(mesh, trimesh.Scene):
                 mesh = mesh.dump(concatenate=True)
             pc = sample_point_cloud(mesh, num_points, normalize=True)
+            feat = compute_morphological_features(mesh)
             gt_pcs.append(pc)
+            gt_features.append(feat)
         except Exception as e:
             log(f"  Error loading GT file {f}: {e}")
         if i % 10 == 0 or i == len(gt_files):
             log(f"  GT Progress: {i}/{len(gt_files)} loaded ({time.time() - t0:.1f}s)")
-    return gt_pcs
+    return gt_pcs, gt_features
 
-def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.05):
+def evaluate_run(run_dir, gt_pcs, gt_features, num_points=2048, fscore_threshold=0.05):
     """Calculate average metrics for all generated meshes in a directory."""
     gen_files = sorted(glob.glob(os.path.join(run_dir, "*.obj")))
     if not gen_files:
@@ -93,6 +103,7 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.05):
     t0 = time.time()
     
     gen_pcs = []
+    gen_features = []
     cds = []
     fscores = []
     sphericities = []
@@ -106,9 +117,12 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.05):
             if isinstance(mesh, trimesh.Scene):
                 mesh = mesh.dump(concatenate=True)
             
-            # 1. Geometry Metrics
+            # 1. Geometry & Morphological Features
             sph = compute_sphericity(mesh)
             sphericities.append(sph)
+            
+            feat = compute_morphological_features(mesh)
+            gen_features.append(feat)
             
             qual = compute_mesh_quality(mesh)
             if qual["watertight"]:
@@ -146,21 +160,29 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.05):
     if not cds:
         return None
 
-    log("    - Computing Coverage (COV) and 1-NN Accuracy...")
+    # Compute dataset-level 3D generative benchmarks
+    log("    - Computing Coverage (COV), Decomposed 1-NN, and Morphological Wasserstein W1 distances...")
     cov = compute_coverage(gen_pcs, gt_pcs, fscore_threshold)
-    onn_acc = compute_1nn_accuracy(gen_pcs, gt_pcs, fscore_threshold)
+    onn_dict = compute_1nn_accuracy_decomposed(gen_pcs, gt_pcs, fscore_threshold)
+    w1_dict = compute_wasserstein_distances(gen_features, gt_features)
         
-    return {
+    res = {
         "CD_MMD": np.mean(cds),
         "FScore_MMD": np.mean(fscores),
         "COV (%)": cov,
-        "1NN_Acc (%)": onn_acc,
+        "1NN_Total (%)": onn_dict["1NN_Total (%)"],
+        "1NN_Fake (%)": onn_dict["1NN_Fake (%)"],
+        "1NN_Real (%)": onn_dict["1NN_Real (%)"],
+        "W1_Volume": w1_dict["W1_Volume"],
+        "W1_Area": w1_dict["W1_Area"],
+        "W1_Aspect": w1_dict["W1_Aspect"],
         "Sphericity": np.mean(sphericities),
         "Watertight_Ratio": watertight_count / total_files,
         "Connected_Components": np.mean(cc_counts),
         "Degenerate_Faces": np.mean(degen_fractions),
         "Mesh_Count": total_files
     }
+    return res
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate and compare generated 3D meshes to GT database.")
@@ -173,7 +195,7 @@ def main():
     args = parser.parse_args()
     
     # 1. Load Ground Truth datasets
-    gt_pcs = load_gt_point_clouds(args.gt_dir, num_points=args.points)
+    gt_pcs, gt_features = load_gt_data(args.gt_dir, num_points=args.points)
     if not gt_pcs:
         log("Error: Ground truth meshes are required for evaluation. Exiting.")
         return
@@ -241,13 +263,13 @@ def main():
 
         log(f"[{idx}/{len(candidate_dirs)}] Evaluating '{rel_path}' ({count} meshes)...")
         run_start = time.time()
-        metrics = evaluate_run(root, gt_pcs, num_points=args.points, fscore_threshold=args.fscore_thresh)
+        metrics = evaluate_run(root, gt_pcs, gt_features, num_points=args.points, fscore_threshold=args.fscore_thresh)
         run_time = time.time() - run_start
         
         if metrics:
             run_results[rel_path] = metrics
             evaluated_count += 1
-            log(f"  ✓ Finished '{rel_path}' in {run_time:.1f}s | CD_MMD: {metrics['CD_MMD']:.6f} | FScore: {metrics['FScore_MMD']:.4f} | COV: {metrics['COV (%)']:.1f}% | 1NN: {metrics['1NN_Acc (%)']:.1f}%\n")
+            log(f"  ✓ Finished '{rel_path}' in {run_time:.1f}s | CD_MMD: {metrics['CD_MMD']:.6f} | FScore: {metrics['FScore_MMD']:.4f} | 1NN_Total: {metrics['1NN_Total (%)']:.1f}% (Fake: {metrics['1NN_Fake (%)']:.1f}%, Real: {metrics['1NN_Real (%)']:.1f}%)\n")
             # Live incremental save to disk after every completed run!
             save_intermediate_results(run_results, cache_file=cache_file)
             log(f"    [Saved live checkpoint to results/evaluation_summary.md and .csv]")
