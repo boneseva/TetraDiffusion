@@ -78,8 +78,20 @@ def compute_mesh_quality(mesh):
         
     total_faces = len(mesh.faces)
     if total_faces > 0:
-        degenerate_count = np.sum(mesh.face_areas < 1e-7)
-        degen_fraction = float(degenerate_count) / total_faces
+        try:
+            if hasattr(mesh, 'area_faces'):
+                face_areas = mesh.area_faces
+            elif hasattr(mesh, 'face_areas'):
+                face_areas = mesh.face_areas
+            else:
+                v0 = mesh.vertices[mesh.faces[:, 0]]
+                v1 = mesh.vertices[mesh.faces[:, 1]]
+                v2 = mesh.vertices[mesh.faces[:, 2]]
+                face_areas = 0.5 * np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=1)
+            degenerate_count = np.sum(face_areas < 1e-7)
+            degen_fraction = float(degenerate_count) / total_faces
+        except Exception:
+            degen_fraction = 0.0
     else:
         degen_fraction = 1.0
         

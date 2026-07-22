@@ -17,7 +17,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00
-#SBATCH --partition=frida
+#SBATCH --partition=amd
 # ──────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
