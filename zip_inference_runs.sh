@@ -1,25 +1,34 @@
 #!/usr/bin/env bash
 # zip_inference_runs.sh
 #
-# Zips all inference_* folders inside the runs/ directory into a single archive.
-# Output: runs/inference_runs_<timestamp>.zip
+# Zips inference_* folders inside the runs/ directory into a single archive.
+# Output: runs/inference_runs_<timestamp>.zip (or custom path via --output)
 #
 # Usage:
 #   bash zip_inference_runs.sh
-#   bash zip_inference_runs.sh --output my_inference.zip   # custom output path
+#   bash zip_inference_runs.sh --output my_inference.zip     # custom output path
+#   bash zip_inference_runs.sh --filter abl_                 # filter runs starting with or containing 'abl_'
+#   bash zip_inference_runs.sh -f "*bio*" -o bio_runs.zip    # glob pattern filter
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNS_DIR="${SCRIPT_DIR}/runs"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-OUTPUT="${RUNS_DIR}/inference_runs_${TIMESTAMP}.zip"
+OUTPUT=""
+FILTER=""
+OUTPUT_SPECIFIED=false
 
-# Allow overriding output path via --output flag
+# Argument parsing
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output|-o)
             OUTPUT="$2"
+            OUTPUT_SPECIFIED=true
+            shift 2
+            ;;
+        --filter|-f)
+            FILTER="$2"
             shift 2
             ;;
         *)
@@ -34,15 +43,61 @@ if [[ ! -d "${RUNS_DIR}" ]]; then
     exit 1
 fi
 
+# Set default output name if not explicitly specified
+if [[ "$OUTPUT_SPECIFIED" == false ]]; then
+    if [[ -n "$FILTER" ]]; then
+        CLEAN_FILTER="$(echo "$FILTER" | tr -cd 'a-zA-Z0-9_-')"
+        OUTPUT="${RUNS_DIR}/inference_runs_${CLEAN_FILTER}_${TIMESTAMP}.zip"
+    else
+        OUTPUT="${RUNS_DIR}/inference_runs_${TIMESTAMP}.zip"
+    fi
+fi
+
+matches_filter() {
+    local path="$1"
+    local rel_path="${path#${RUNS_DIR}/}"
+    local run_name="${rel_path%%/*}"
+
+    if [[ -z "$FILTER" ]]; then
+        return 0
+    fi
+
+    local run_name_lower="${run_name,,}"
+    local filter_lower="${FILTER,,}"
+
+    if [[ "$FILTER" == *'*'* || "$FILTER" == *'?'* ]]; then
+        if [[ "$run_name_lower" == $filter_lower || "$rel_path" == $filter_lower ]]; then
+            return 0
+        fi
+    else
+        if [[ "$run_name_lower" == "$filter_lower"* || "$run_name_lower" == *"$filter_lower"* ]]; then
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
 # Collect inference_* folders (any depth under runs/)
-mapfile -t FOLDERS < <(find "${RUNS_DIR}" -type d -name "inference_*" | sort)
+mapfile -t ALL_FOLDERS < <(find "${RUNS_DIR}" -type d -name "inference_*" | sort)
+
+FOLDERS=()
+for f in "${ALL_FOLDERS[@]}"; do
+    if matches_filter "$f"; then
+        FOLDERS+=("$f")
+    fi
+done
 
 if [[ ${#FOLDERS[@]} -eq 0 ]]; then
-    echo "No inference_* folders found in ${RUNS_DIR}" >&2
+    if [[ -n "$FILTER" ]]; then
+        echo "No inference_* folders found matching filter '${FILTER}' in ${RUNS_DIR}" >&2
+    else
+        echo "No inference_* folders found in ${RUNS_DIR}" >&2
+    fi
     exit 1
 fi
 
-echo "Found ${#FOLDERS[@]} inference folder(s):"
+echo "Found ${#FOLDERS[@]} inference folder(s)${FILTER:+ matching filter '${FILTER}'}:"
 for f in "${FOLDERS[@]}"; do
     echo "  ${f}"
 done
@@ -61,4 +116,5 @@ zip -r "${OUTPUT}" "${RELATIVE_FOLDERS[@]}"
 
 echo ""
 echo "Done. Archive size: $(du -sh "${OUTPUT}" | cut -f1)  →  ${OUTPUT}"
+
 
