@@ -1,4 +1,6 @@
 import os
+import sys
+import time
 import glob
 import argparse
 import numpy as np
@@ -6,31 +8,41 @@ import pandas as pd
 import trimesh
 from metrics import sample_point_cloud, compute_chamfer_and_fscore, compute_sphericity, compute_mesh_quality
 
+def log(msg):
+    """Print immediately without line buffering for SLURM tail -f tracking."""
+    print(msg, flush=True)
+
 def load_gt_point_clouds(gt_dir, num_points=2048):
     """Load all ground truth meshes and sample point clouds from them."""
     gt_files = glob.glob(os.path.join(gt_dir, "*.obj"))
     if not gt_files:
-        print(f"WARNING: No ground truth OBJ files found in {gt_dir}")
+        log(f"WARNING: No ground truth OBJ files found in {gt_dir}")
         return []
         
-    print(f"Loading {len(gt_files)} ground truth meshes from {gt_dir}...")
+    log(f"Loading {len(gt_files)} ground truth meshes from {gt_dir}...")
     gt_pcs = []
-    for f in gt_files:
+    t0 = time.time()
+    for i, f in enumerate(gt_files, 1):
         try:
             mesh = trimesh.load(f)
+            if isinstance(mesh, trimesh.Scene):
+                mesh = mesh.dump(concatenate=True)
             pc = sample_point_cloud(mesh, num_points)
             gt_pcs.append(pc)
         except Exception as e:
-            print(f"Error loading GT file {f}: {e}")
+            log(f"  Error loading GT file {f}: {e}")
+        if i % 10 == 0 or i == len(gt_files):
+            log(f"  GT Progress: {i}/{len(gt_files)} loaded ({time.time() - t0:.1f}s)")
     return gt_pcs
 
 def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
     """Calculate average metrics for all generated meshes in a directory."""
-    gen_files = glob.glob(os.path.join(run_dir, "*.obj"))
+    gen_files = sorted(glob.glob(os.path.join(run_dir, "*.obj")))
     if not gen_files:
         return None
         
-    print(f"Evaluating {len(gen_files)} generated meshes in {run_dir}...")
+    total_files = len(gen_files)
+    t0 = time.time()
     
     cds = []
     fscores = []
@@ -39,9 +51,11 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
     cc_counts = []
     degen_fractions = []
     
-    for f in gen_files:
+    for i, f in enumerate(gen_files, 1):
         try:
             mesh = trimesh.load(f)
+            if isinstance(mesh, trimesh.Scene):
+                mesh = mesh.dump(concatenate=True)
             
             # 1. Geometry Metrics
             sph = compute_sphericity(mesh)
@@ -54,10 +68,8 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
             degen_fractions.append(qual["degenerate_faces_fraction"])
             
             # 2. Distribution / Chamfer Metrics
-            # Sample point cloud from generated shape
             gen_pc = sample_point_cloud(mesh, num_points)
             
-            # Find nearest neighbor in GT set (Minimum Modified Distance)
             best_cd = float('inf')
             best_f = 0.0
             
@@ -73,7 +85,13 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
                 fscores.append(best_f)
                 
         except Exception as e:
-            print(f"Error evaluating mesh {f}: {e}")
+            log(f"  Warning: Error evaluating mesh {os.path.basename(f)}: {e}")
+            
+        if i % 10 == 0 or i == total_files:
+            elapsed = time.time() - t0
+            speed = i / max(elapsed, 0.001)
+            eta = (total_files - i) / max(speed, 0.001)
+            log(f"    - Processed {i}/{total_files} meshes ({elapsed:.1f}s, ETA: {eta:.1f}s)")
             
     if not cds:
         return None
@@ -82,10 +100,10 @@ def evaluate_run(run_dir, gt_pcs, num_points=2048, fscore_threshold=0.02):
         "CD_MMD": np.mean(cds),
         "FScore_MMD": np.mean(fscores),
         "Sphericity": np.mean(sphericities),
-        "Watertight_Ratio": watertight_count / len(gen_files),
+        "Watertight_Ratio": watertight_count / total_files,
         "Connected_Components": np.mean(cc_counts),
         "Degenerate_Faces": np.mean(degen_fractions),
-        "Mesh_Count": len(gen_files)
+        "Mesh_Count": total_files
     }
 
 def main():
@@ -100,58 +118,69 @@ def main():
     # 1. Load Ground Truth datasets
     gt_pcs = load_gt_point_clouds(args.gt_dir, num_points=args.points)
     if not gt_pcs:
-        print("Error: Ground truth meshes are required for evaluation. Exiting.")
+        log("Error: Ground truth meshes are required for evaluation. Exiting.")
         return
         
     # 2. Scan for evaluation folders containing OBJ files
     filter_msg = f" (filtered by: '{args.filter}')" if args.filter else ""
-    print(f"Scanning for directories containing generated meshes in {args.runs_dir}{filter_msg}...")
-    run_results = {}
+    log(f"\nScanning for directories containing generated meshes in {args.runs_dir}{filter_msg}...")
     
-    # Walk through subdirectories to find folders containing OBJ files
+    candidate_dirs = []
     for root, dirs, files in os.walk(args.runs_dir):
-        # Skip top-level runs directory itself, look for leaf directories with OBJs
         obj_files = [f for f in files if f.endswith('.obj')]
         if obj_files:
-            # Determine a friendly name for this run output
             rel_path = os.path.relpath(root, args.runs_dir)
-            
-            # Avoid picking up top-level runs folder directly
             if rel_path == ".":
                 continue
                 
-            # Filter runs if a pattern is provided
             if args.filter:
                 import fnmatch
                 top_dir = rel_path.split(os.sep)[0]
-                # Auto-append '*' if user passes a simple prefix (like 'abl_')
                 pattern = args.filter
                 if not ('*' in pattern or '?' in pattern):
                     pattern = f"{pattern}*"
                 
-                # Check case-insensitive match
                 if not fnmatch.fnmatch(top_dir.lower(), pattern.lower()):
                     continue
-                
-            metrics = evaluate_run(root, gt_pcs, num_points=args.points, fscore_threshold=args.fscore_thresh)
-            if metrics:
-                run_results[rel_path] = metrics
-                
-    if not run_results:
-        print("No generated meshes (.obj) found to evaluate in any run subdirectories.")
+            candidate_dirs.append((root, rel_path, len(obj_files)))
+
+    if not candidate_dirs:
+        log("No generated meshes (.obj) found to evaluate in any run subdirectories.")
         return
+
+    log(f"Found {len(candidate_dirs)} directory(ies) with meshes to evaluate.")
+    log("-" * 80)
+    for idx, (root, rel_path, count) in enumerate(candidate_dirs, 1):
+        log(f"  [{idx}/{len(candidate_dirs)}] {rel_path} ({count} meshes)")
+    log("-" * 80 + "\n")
+
+    run_results = {}
+    total_start = time.time()
+
+    for idx, (root, rel_path, count) in enumerate(candidate_dirs, 1):
+        log(f"[{idx}/{len(candidate_dirs)}] Evaluating '{rel_path}' ({count} meshes)...")
+        run_start = time.time()
+        metrics = evaluate_run(root, gt_pcs, num_points=args.points, fscore_threshold=args.fscore_thresh)
+        run_time = time.time() - run_start
         
+        if metrics:
+            run_results[rel_path] = metrics
+            log(f"  ✓ Finished '{rel_path}' in {run_time:.1f}s | CD_MMD: {metrics['CD_MMD']:.6f} | FScore: {metrics['FScore_MMD']:.4f}\n")
+        else:
+            log(f"  ✗ Failed/Empty metrics for '{rel_path}' in {run_time:.1f}s\n")
+            
+    total_time = time.time() - total_start
+    log(f"Evaluation complete for {len(run_results)} run(s) in {total_time:.1f} seconds.")
+
     # 3. Format & print results
     df = pd.DataFrame.from_dict(run_results, orient='index')
-    
-    # Sort by Chamfer Distance MMD (lower is better)
     df = df.sort_values(by="CD_MMD", ascending=True)
     
-    print("\n" + "="*80)
-    print(" EVALUATION COMPARISON RESULTS (Sorted by CD MMD - Lower is Better)")
-    print("="*80)
-    print(df.to_string())
-    print("="*80)
+    log("\n" + "="*80)
+    log(" EVALUATION COMPARISON RESULTS (Sorted by CD MMD - Lower is Better)")
+    log("="*80)
+    log(df.to_string())
+    log("="*80)
     
     # Save results to CSV & Markdown
     os.makedirs("results", exist_ok=True)
@@ -170,9 +199,9 @@ def main():
         f.write("* **Connected_Components**: Average number of disconnected mesh parts (ideal = 1.0; >1.0 indicates background noise/floaters).\n")
         f.write("* **Degenerate_Faces**: Fraction of faces with near-zero area (lower = better mesh quality).\n")
 
-    print("\nResults successfully saved to:")
-    print("  - evaluation/results/evaluation_summary.csv")
-    print("  - evaluation/results/evaluation_summary.md")
+    log("\nResults successfully saved to:")
+    log("  - evaluation/results/evaluation_summary.csv")
+    log("  - evaluation/results/evaluation_summary.md")
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

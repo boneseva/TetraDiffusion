@@ -22,6 +22,8 @@
 
 set -euo pipefail
 
+export PYTHONUNBUFFERED=1
+
 # Repo root directory setup
 REPO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 cd "$REPO_DIR"
