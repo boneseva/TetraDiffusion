@@ -47,6 +47,7 @@ fi
 EXCLUDES=(
     "--exclude=__pycache__/"
     "--exclude=*.pyc"
+    "--exclude=*.bak"
     "--exclude=.git/"
     "--exclude=.idea/"
     "--exclude=.vscode/"
