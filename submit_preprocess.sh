@@ -77,6 +77,8 @@ while [[ $# -gt 0 ]]; do
                         done ;;
         --launch_array) LAUNCH_ARRAY=true; shift ;;
         --dry_run)      DRY_RUN_FLAG="--dry_run"; shift ;;
+        --all_csv|--update_all_csv)
+                        EXTRA_FIT_ARGS+=("--update_all_csv" "$2"); shift 2 ;;
         # Pass everything else straight to fit_many.py
         *)              EXTRA_FIT_ARGS+=("$1"); shift ;;
     esac
