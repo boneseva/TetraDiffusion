@@ -265,6 +265,23 @@ def handle_evaluate(args: argparse.Namespace) -> None:
     print("\nEvaluation complete! Interactive shape-space HTML generated.")
 
 
+def handle_sync(args: argparse.Namespace) -> None:
+    """Sync repository and runs from remote cluster to local machine/VM."""
+    sync_script = REPO_ROOT / "pipeline" / "sync_from_cluster.sh"
+    cmd = ["bash", str(sync_script), args.remote]
+    if args.target:
+        cmd.append(args.target)
+    if args.watch:
+        cmd.append("--watch")
+    if args.interval:
+        cmd.extend(["--interval", str(args.interval)])
+    if args.dry_run:
+        cmd.append("--dry_run")
+
+    print(f"Executing rsync pipeline script: {' '.join(cmd)}")
+    subprocess.run(cmd, check=True)
+
+
 def handle_dashboard(args: argparse.Namespace) -> None:
     """Launch interactive Gradio visual suite."""
     dashboard_path = REPO_ROOT / "pipeline" / "dashboard.py"
@@ -328,6 +345,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval = subparsers.add_parser("evaluate", help="Compute metrics and plot interactive HTML shape space")
     p_eval.add_argument("--dataset", choices=["openorganelle", "urocell"], default="urocell", help="Dataset name")
     p_eval.set_defaults(func=handle_evaluate)
+
+    # sync
+    p_sync = subparsers.add_parser("sync", help="Sync runs and datasets from HPC cluster to local machine/VM")
+    p_sync.add_argument("--remote", required=True, help="Remote source (e.g. user@login-frida:/path/to/TetraDiffusion)")
+    p_sync.add_argument("--target", help="Local destination directory")
+    p_sync.add_argument("--watch", action="store_true", help="Run rsync continuously every N seconds")
+    p_sync.add_argument("--interval", type=int, default=30, help="Interval in seconds for watch mode")
+    p_sync.add_argument("--dry_run", action="store_true", help="Preview files to be synced without copying")
+    p_sync.set_defaults(func=handle_sync)
 
     # dashboard
     p_dash = subparsers.add_parser("dashboard", help="Launch the interactive web browser dashboard")
