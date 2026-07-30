@@ -56,11 +56,17 @@ class Trainer(object):
         # are never accidentally reused.
         # ------------------------------------------------------------------
         wandb_id_file = os.path.join(config_folder, "wandb_run_id.txt")
-        if cfg.load_weights and os.path.exists(wandb_id_file):
+        has_checkpoint = cfg.load_weights and os.path.exists(config_folder) and len(glob(os.path.join(config_folder, "*.pt"))) > 0
+
+        if cfg.load_weights and os.path.exists(wandb_id_file) and has_checkpoint:
             with open(wandb_id_file) as f:
                 wandb_id = f.read().strip()
             wandb_resume = "allow"
             print(f"[Trainer] WandB: resuming run id={wandb_id}")
+        elif cfg.load_weights:
+            wandb_id = None
+            wandb_resume = "never"
+            print(f"[Trainer] WARNING: --resume requested (cfg.load_weights=True), but NO checkpoint (*.pt) file was found in '{config_folder}'. Starting a fresh run from step 0.")
         else:
             wandb_id = None
             wandb_resume = "never"
@@ -262,43 +268,46 @@ class Trainer(object):
         # scheduler state from a single file load post-prepare() to minimize VRAM usage.
         if cfg.load_weights:
             import gc
-            try:
-                all_weights = glob(config_folder + "/*.pt")
-                latest = max(all_weights, key=os.path.getctime)
-                print(f"[Trainer] Loading consolidated checkpoint from {latest}")
-                data = torch.load(latest, map_location="cpu", weights_only=False)
+                all_weights = glob(os.path.join(config_folder, "*.pt"))
+                if not all_weights:
+                    print(f"[Trainer] WARNING: --resume requested, but no *.pt checkpoint files found in '{config_folder}'. Starting training at step 0.")
+                    self.step = 0
+                else:
+                    latest = max(all_weights, key=os.path.getctime)
+                    print(f"[Trainer] Loading consolidated checkpoint from {latest}")
+                    data = torch.load(latest, map_location="cpu", weights_only=False)
 
-                # 1. Restore UVIT model weights
-                checkpoint = data['model']
-                for key in list(checkpoint.keys()):
-                    checkpoint[key.replace('model.', '')] = checkpoint[key]
-                    del checkpoint[key]
-                raw_model = self.accelerator.unwrap_model(self.model)
-                raw_model.model.load_state_dict(checkpoint, strict=False)
-                print("[Trainer] Model state restored.")
+                    # 1. Restore UVIT model weights
+                    checkpoint = data['model']
+                    for key in list(checkpoint.keys()):
+                        checkpoint[key.replace('model.', '')] = checkpoint[key]
+                        del checkpoint[key]
+                    raw_model = self.accelerator.unwrap_model(self.model)
+                    raw_model.model.load_state_dict(checkpoint, strict=False)
+                    print("[Trainer] Model state restored.")
 
-                # 2. Restore EMA (rank 0 only)
-                if self.accelerator.is_main_process:
-                    self.step = data.get('step', 0)
-                    checkpoint_ema = data["ema"]
-                    self.ema.load_state_dict(checkpoint_ema, strict=False)
-                    print("[Trainer] EMA state restored.")
+                    # 2. Restore EMA (rank 0 only)
+                    if self.accelerator.is_main_process:
+                        self.step = data.get('step', 0)
+                        checkpoint_ema = data["ema"]
+                        self.ema.load_state_dict(checkpoint_ema, strict=False)
+                        print("[Trainer] EMA state restored.")
 
-                # 3. Restore Optimizer state
-                if "opt" in data:
-                    self.opt.load_state_dict(data["opt"])
-                    print("[Trainer] Optimizer state restored.")
+                    # 3. Restore Optimizer state
+                    if "opt" in data:
+                        self.opt.load_state_dict(data["opt"])
+                        print("[Trainer] Optimizer state restored.")
 
-                # 4. Restore Scheduler state
-                if self.scheduler is not None and "scheduler" in data:
-                    self.scheduler.load_state_dict(data["scheduler"])
-                    print(f"[Trainer] LR scheduler state restored (last_epoch={data['scheduler'].get('last_epoch', '?')}).")
+                    # 4. Restore Scheduler state
+                    if self.scheduler is not None and "scheduler" in data:
+                        self.scheduler.load_state_dict(data["scheduler"])
+                        print(f"[Trainer] LR scheduler state restored (last_epoch={data['scheduler'].get('last_epoch', '?')}).")
 
-                print(f"[Trainer] Success — resumed from step {self.step}")
-                
-                # Delete temporary dictionary and collect garbage to free CPU memory
-                del data
-                gc.collect()
+                    print(f"[Trainer] Success — resumed from step {self.step}")
+                    
+                    # Delete temporary dictionary and collect garbage to free CPU memory
+                    del data
+                    gc.collect()
             except Exception as e:
                 print(f"[Trainer] Resume failed: {e}")
                 self.step = 0

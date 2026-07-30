@@ -57,6 +57,7 @@ submit_run() {
         --name              "$name"
         --num_steps         400000
         --batch_size        16
+        --test_every        2000
         --offset_noise      0.1
         --bio_loss_weight   "$bio_w"
         --bio_loss_type     "$bio_t"
