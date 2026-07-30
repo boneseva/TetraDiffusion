@@ -268,6 +268,7 @@ class Trainer(object):
         # scheduler state from a single file load post-prepare() to minimize VRAM usage.
         if cfg.load_weights:
             import gc
+            try:
                 all_weights = glob(os.path.join(config_folder, "*.pt"))
                 if not all_weights:
                     print(f"[Trainer] WARNING: --resume requested, but no *.pt checkpoint files found in '{config_folder}'. Starting training at step 0.")
