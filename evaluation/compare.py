@@ -75,7 +75,7 @@ def save_intermediate_results(run_results, cache_file=None):
         f.write("* **Connected_Components**: Average number of disconnected mesh parts (ideal = 1.0; >1.0 indicates background noise/floaters).\n")
         f.write("* **Degenerate_Faces**: Fraction of faces with near-zero area (lower = better mesh quality).\n")
 
-def load_gt_data(gt_dir, num_points=2048, max_gt=None):
+def load_gt_data(gt_dir, num_points=2048):
     """Load all ground truth meshes, extract morphological features, and sample normalized point clouds."""
     gt_files = sorted(glob.glob(os.path.join(gt_dir, "*.obj")))
     if not gt_files:

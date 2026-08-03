@@ -3,12 +3,12 @@
 plot_shape_space_html.py — Interactive Web HTML 3D Shape Space & Orbit Mesh Explorer.
 
 Generates a standalone, self-contained interactive HTML web page with:
-  1. 2D MDS Metric Space Map (Plotly.js): Click any shape dot to inspect it.
-  2. Interactive 3D WebGL Orbit Mesh Viewer (Three.js): Soft matte shaded 3D surface meshes
-     (GT vs. Generated organelles) with realistic diffuse lighting and double-sided rendering.
-  3. Synchronized & Minimizable 1-NN Secondary 3D Viewer: A floating inset 3D viewer showing the selected
-     shape's 1-NN nearest neighbor with synchronized camera rotation, accurate color coding (GT vs. Gen),
-     and a collapsible interface.
+  1. Modern 2D MDS Metric Space Map (Plotly.js): Click any shape dot to inspect it.
+  2. Interactive 3D WebGL Orbit Mesh Viewer (Three.js): Soft satin-shaded 3D surface meshes
+     (GT vs. Generated organelles) with realistic hemisphere lighting (no harsh glare).
+  3. Minimizable 1-NN Secondary 3D Viewer: A floating inset 3D viewer showing the selected
+     shape's 1-NN nearest neighbor, with a toggle button to collapse/minimize it, synchronized camera rotation,
+     and color coding (GT vs. Gen).
 """
 
 import os
@@ -112,10 +112,10 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TetraDiffusion — 3D Shape Space Explorer ({run_name})</title>
 
-    <!-- Google Fonts -->
+    <!-- Google Fonts Inter -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 
     <!-- Load Plotly & Three.js CDN -->
     <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
@@ -127,47 +127,44 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         body {{
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: #090d16;
-            color: #f1f5f9;
+            color: #f8fafc;
             height: 100vh;
             display: flex;
             flex-direction: column;
             overflow: hidden;
             -webkit-font-smoothing: antialiased;
         }}
+
         header {{
-            background: #0f172a;
-            padding: 14px 28px;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(12px);
+            padding: 12px 24px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
             z-index: 50;
         }}
-        header h1 {{
-            font-size: 18px;
-            font-weight: 700;
-            background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+        header .brand {{
             display: flex;
             align-items: center;
             gap: 10px;
         }}
-        header .run-badge {{
-            font-size: 12px;
-            color: #94a3b8;
-            background: rgba(30, 41, 59, 0.8);
-            padding: 5px 12px;
-            border-radius: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.08);
+        header .brand-dot {{
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: #38bdf8;
+            box-shadow: 0 0 10px #38bdf8;
         }}
-        header .run-badge strong {{ color: #38bdf8; }}
+        header h1 {{ font-size: 16px; font-weight: 600; color: #f8fafc; letter-spacing: -0.01em; }}
+        header .run-tag {{ font-size: 13px; color: #94a3b8; font-weight: 400; }}
+        header .run-tag strong {{ color: #38bdf8; font-weight: 500; }}
 
         .container {{
             flex: 1;
             display: flex;
-            height: calc(100vh - 57px);
+            height: calc(100vh - 53px);
         }}
         #plot-container {{
             flex: 1.15;
@@ -177,7 +174,7 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         }}
         #viewer-container {{
             flex: 0.85;
-            background: #030712;
+            background: #060911;
             display: flex;
             flex-direction: column;
             position: relative;
@@ -189,88 +186,103 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
             display: block;
         }}
 
-        /* Modern Glassmorphic Info Panel */
+        /* Modern Glassmorphism Info Panel */
         .info-panel {{
             position: absolute;
-            top: 20px;
-            left: 20px;
-            background: rgba(15, 23, 42, 0.82);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            padding: 16px 20px;
-            border-radius: 14px;
-            border: 1px solid rgba(255, 255, 255, 0.12);
+            top: 16px;
+            left: 16px;
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(16px) saturate(180%);
+            padding: 14px 18px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.08);
             font-size: 13px;
             z-index: 10;
             pointer-events: none;
             max-width: 380px;
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4);
+            box-shadow: 0 20px 30px -10px rgba(0, 0, 0, 0.7);
         }}
-        .info-panel h3 {{ font-size: 15px; font-weight: 600; margin-bottom: 8px; color: #f8fafc; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }}
-        .info-panel p {{ color: #94a3b8; line-height: 1.5; font-size: 12.5px; }}
+        .info-panel h3 {{
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 6px;
+            color: #f8fafc;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .info-panel p {{
+            color: #94a3b8;
+            line-height: 1.45;
+            font-size: 12px;
+        }}
 
+        /* Badges */
         .badge {{
             display: inline-flex;
             align-items: center;
-            padding: 3px 9px;
+            padding: 3px 8px;
             border-radius: 6px;
-            font-size: 10px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.02em;
             text-transform: uppercase;
         }}
-        .badge-gt {{ background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.35); }}
-        .badge-gen {{ background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.35); }}
+        .badge-gt {{
+            background: rgba(56, 189, 248, 0.15);
+            color: #38bdf8;
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.15);
+        }}
+        .badge-gen {{
+            background: rgba(251, 113, 133, 0.15);
+            color: #fb7185;
+            border: 1px solid rgba(251, 113, 133, 0.3);
+            box-shadow: 0 0 10px rgba(251, 113, 133, 0.15);
+        }}
 
         .controls-hint {{
             position: absolute;
-            bottom: 20px;
-            left: 20px;
+            bottom: 16px;
+            left: 16px;
             background: rgba(15, 23, 42, 0.75);
             backdrop-filter: blur(12px);
             padding: 8px 14px;
             border-radius: 8px;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            font-size: 11.5px;
-            color: #94a3b8;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            font-size: 11px;
+            color: #64748b;
             z-index: 10;
             pointer-events: none;
         }}
-        .controls-hint strong {{ color: #cbd5e1; }}
 
-        /* Collapsible & Floating 1-NN Secondary 3D Viewer Inset */
+        /* Floating 1-NN Secondary 3D Viewer Inset (Minimizable) */
         #nn-card {{
             position: absolute;
-            bottom: 20px;
-            right: 20px;
+            bottom: 16px;
+            right: 16px;
             width: 280px;
-            height: 250px;
+            height: 260px;
             background: rgba(15, 23, 42, 0.85);
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 14px;
+            backdrop-filter: blur(16px) saturate(180%);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
             display: flex;
             flex-direction: column;
             overflow: hidden;
-            box-shadow: 0 20px 35px -5px rgba(0, 0, 0, 0.6);
+            box-shadow: 0 20px 30px -10px rgba(0, 0, 0, 0.7);
             z-index: 20;
-            transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1), width 0.3s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.2s ease;
+            transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
         }}
 
-        #nn-card.collapsed {{
-            height: 38px;
-            width: 240px;
-            background: rgba(15, 23, 42, 0.92);
-        }}
-
-        #nn-card.collapsed .nn-card-body {{
-            display: none;
+        #nn-card.minimized {{
+            height: 42px !important;
+            width: 230px !important;
         }}
 
         .nn-card-header {{
-            padding: 8px 12px;
-            background: rgba(30, 41, 59, 0.85);
+            padding: 10px 12px;
+            background: rgba(30, 41, 59, 0.7);
             border-bottom: 1px solid rgba(255, 255, 255, 0.08);
             font-size: 12px;
             display: flex;
@@ -278,43 +290,24 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
             align-items: center;
             user-select: none;
         }}
-        .nn-header-left {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-        .nn-card-header span.title {{ font-weight: 600; color: #cbd5e1; font-size: 11.5px; }}
+        .nn-card-header span.title {{ font-weight: 500; color: #cbd5e1; font-size: 12px; }}
 
-        .minimize-btn {{
-            background: rgba(255, 255, 255, 0.08);
-            border: 1px solid rgba(255, 255, 255, 0.15);
+        .toggle-btn {{
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             color: #94a3b8;
-            width: 20px;
-            height: 20px;
+            cursor: pointer;
+            width: 22px;
+            height: 22px;
             border-radius: 5px;
             display: flex;
             align-items: center;
             justify-content: center;
-            cursor: pointer;
-            font-size: 13px;
-            font-weight: 700;
-            line-height: 1;
-            transition: all 0.15s ease;
+            transition: all 0.2s ease;
         }}
-
-        .minimize-btn:hover {{
-            background: rgba(255, 255, 255, 0.2);
+        .toggle-btn:hover {{
+            background: rgba(255, 255, 255, 0.15);
             color: #f8fafc;
-            border-color: rgba(255, 255, 255, 0.3);
-        }}
-
-        .nn-card-body {{
-            flex: 1;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            width: 100%;
-            height: calc(100% - 38px);
         }}
 
         #nn-canvas-holder {{
@@ -322,31 +315,42 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
             position: relative;
             width: 100%;
             height: 100%;
-            background: #030712;
+            background: #060911;
+            transition: opacity 0.25s ease;
         }}
+        #nn-card.minimized #nn-canvas-holder,
+        #nn-card.minimized .nn-footer-label {{
+            opacity: 0;
+            pointer-events: none;
+        }}
+
         .nn-footer-label {{
             position: absolute;
-            bottom: 8px;
+            bottom: 6px;
             left: 8px;
             right: 8px;
             font-size: 11px;
-            color: #e2e8f0;
+            color: #cbd5e1;
             background: rgba(15, 23, 42, 0.75);
             backdrop-filter: blur(8px);
-            padding: 4px 10px;
+            padding: 4px 8px;
             border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.08);
             pointer-events: none;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: opacity 0.25s ease;
         }}
     </style>
 </head>
 <body>
     <header>
-        <h1>💎 3D Organelle Shape Space Explorer</h1>
-        <div class="run-badge">Run: <strong>{run_name}</strong></div>
+        <div class="brand">
+            <div class="brand-dot"></div>
+            <h1>3D Organelle Shape Space Explorer</h1>
+        </div>
+        <span class="run-tag">Run: <strong>{run_name}</strong> | Click dots to orbit 3D meshes</span>
     </header>
 
     <div class="container">
@@ -356,28 +360,30 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         <!-- 3D Orbit Viewer -->
         <div id="viewer-container">
             <div class="info-panel" id="info-panel">
-                <h3 id="shape-name">Select a shape on the left map</h3>
-                <p id="shape-meta">Click any blue (GT) or red (Generated) point to view 3D mesh geometry.</p>
+                <h3 id="shape-name">Select a shape on the left</h3>
+                <p id="shape-meta">Click any blue (GT) or red (Generated) point to orbit 3D mesh geometry.</p>
             </div>
             
-            <div class="controls-hint">💡 <strong>3D Orbit:</strong> Left-click + Drag to rotate | Right-click to pan | Scroll to zoom</div>
+            <div class="controls-hint">💡 <strong>3D Controls:</strong> Left-click + Drag to rotate | Right-click to pan | Scroll to zoom</div>
             
             <!-- Main Three.js Canvas Holder -->
             <div id="canvas-holder"></div>
 
-            <!-- Inset 1-NN Secondary 3D Viewer (Collapsible) -->
+            <!-- Inset 1-NN Secondary 3D Viewer (Minimizable) -->
             <div id="nn-card">
                 <div class="nn-card-header">
-                    <div class="nn-header-left">
-                        <button id="nn-toggle-btn" class="minimize-btn" title="Minimize/Expand 1-NN Viewer">−</button>
+                    <div style="display: flex; align-items: center; gap: 6px;">
                         <span class="title">1-NN Match</span>
+                        <span id="nn-badge" class="badge"></span>
                     </div>
-                    <span id="nn-badge" class="badge"></span>
+                    <button class="toggle-btn" id="nn-toggle-btn" onclick="toggleNNCard()" title="Minimize / Expand 1-NN Viewer">
+                        <svg id="toggle-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="5" y1="12" x2="19" y2="12"></line>
+                        </svg>
+                    </button>
                 </div>
-                <div class="nn-card-body" id="nn-card-body">
-                    <div id="nn-canvas-holder"></div>
-                    <div class="nn-footer-label" id="nn-footer-name">No shape selected</div>
-                </div>
+                <div id="nn-canvas-holder"></div>
+                <div class="nn-footer-label" id="nn-footer-name">No shape selected</div>
             </div>
         </div>
     </div>
@@ -387,6 +393,21 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         const coords = {coords_json};
         const nnIndices = {nn_json};
         const distances = {distances_json};
+
+        // Toggle Minimize / Expand 1-NN Viewer Card
+        function toggleNNCard() {{
+            const card = document.getElementById('nn-card');
+            const icon = document.getElementById('toggle-icon');
+            card.classList.toggle('minimized');
+
+            if (card.classList.contains('minimized')) {{
+                // Expand icon (plus / maximize)
+                icon.innerHTML = '<polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line>';
+            }} else {{
+                // Minimize icon (minus)
+                icon.innerHTML = '<line x1="5" y1="12" x2="19" y2="12"></line>';
+            }}
+        }}
 
         // Separate indices into GT and Generated
         const gtIdxs = [];
@@ -403,7 +424,7 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
             type: 'scatter',
             name: 'Ground Truth (Real)',
             text: gtIdxs.map(i => shapes[i].name),
-            marker: {{ color: '#3b82f6', size: 10, symbol: 'circle', line: {{ color: '#1d4ed8', width: 1.5 }} }},
+            marker: {{ color: '#38bdf8', size: 10, symbol: 'circle', line: {{ color: '#0284c7', width: 1.5 }} }},
             customdata: gtIdxs
         }};
 
@@ -414,7 +435,7 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
             type: 'scatter',
             name: 'Generated (Model)',
             text: genIdxs.map(i => shapes[i].name),
-            marker: {{ color: '#ef4444', size: 9, symbol: 'triangle-up', line: {{ color: '#b91c1c', width: 1.5 }} }},
+            marker: {{ color: '#fb7185', size: 9, symbol: 'triangle-up', line: {{ color: '#e11d48', width: 1.5 }} }},
             customdata: genIdxs
         }};
 
@@ -437,12 +458,12 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         }});
 
         const layout = {{
-            title: {{ text: 'MDS 2D Shape Metric Space (Chamfer Distance)', font: {{ color: '#f1f5f9', size: 14, family: 'Inter' }} }},
+            title: {{ text: 'MDS 2D Shape Metric Space (Chamfer Distance)', font: {{ family: 'Inter', color: '#f8fafc', size: 14 }} }},
             paper_bgcolor: '#090d16',
             plot_bgcolor: '#0f172a',
-            xaxis: {{ gridcolor: 'rgba(51, 65, 85, 0.4)', zerolinecolor: 'rgba(71, 85, 105, 0.5)', tickfont: {{ color: '#94a3b8', family: 'Inter' }} }},
-            yaxis: {{ gridcolor: 'rgba(51, 65, 85, 0.4)', zerolinecolor: 'rgba(71, 85, 105, 0.5)', tickfont: {{ color: '#94a3b8', family: 'Inter' }} }},
-            legend: {{ font: {{ color: '#e2e8f0', family: 'Inter' }}, bgcolor: 'rgba(15, 23, 42, 0.8)' }},
+            xaxis: {{ gridcolor: '#1e293b', zerolinecolor: '#334155', tickfont: {{ family: 'Inter', color: '#64748b' }} }},
+            yaxis: {{ gridcolor: '#1e293b', zerolinecolor: '#334155', tickfont: {{ family: 'Inter', color: '#64748b' }} }},
+            legend: {{ font: {{ family: 'Inter', color: '#cbd5e1' }}, bgcolor: 'rgba(15, 23, 42, 0.8)' }},
             margin: {{ l: 50, r: 20, t: 50, b: 50 }}
         }};
 
@@ -451,7 +472,7 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         // Setup Main Three.js 3D Viewer
         const holder = document.getElementById('canvas-holder');
         const mainScene = new THREE.Scene();
-        mainScene.background = new THREE.Color(0x030712);
+        mainScene.background = new THREE.Color(0x060911);
 
         const mainCamera = new THREE.PerspectiveCamera(45, holder.clientWidth / holder.clientHeight, 0.1, 100);
         mainCamera.position.set(0, 0, 2.5);
@@ -468,7 +489,7 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         // Setup 1-NN Secondary Inset 3D Viewer
         const nnHolder = document.getElementById('nn-canvas-holder');
         const nnScene = new THREE.Scene();
-        nnScene.background = new THREE.Color(0x030712);
+        nnScene.background = new THREE.Color(0x060911);
 
         const nnCamera = new THREE.PerspectiveCamera(45, nnHolder.clientWidth / nnHolder.clientHeight, 0.1, 100);
         nnCamera.position.set(0, 0, 2.5);
@@ -478,25 +499,26 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
         nnRenderer.setPixelRatio(window.devicePixelRatio);
         nnHolder.appendChild(nnRenderer.domElement);
 
-        // Soft, Non-Shiny Matte Lighting Setup
+        // Soft, Natural 3D Lighting Setup (Eliminates harsh plastic shine!)
         function setupLighting(scene) {{
-            // Soft Hemispheric Skylight (White sky, deep slate ground)
-            const hemiLight = new THREE.HemisphereLight(0xf8fafc, 0x0f172a, 0.75);
+            // Sky & ground ambient gradient light
+            const hemiLight = new THREE.HemisphereLight(0xe0f2fe, 0x0f172a, 0.75);
             scene.add(hemiLight);
 
-            // Key Light (Soft main light from top-right)
-            const keyLight = new THREE.DirectionalLight(0xffffff, 0.75);
-            keyLight.position.set(2, 3, 2);
+            // Key directional light (soft main light)
+            const keyLight = new THREE.DirectionalLight(0xffffff, 0.65);
+            keyLight.position.set(2, 4, 3);
             scene.add(keyLight);
 
-            // Fill Light (Cool blue tint from left)
-            const fillLight = new THREE.DirectionalLight(0x60a5fa, 0.35);
-            fillLight.position.set(-2, 1, -2);
+            // Fill light (cyan tint for organic contrast)
+            const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.25);
+            fillLight.position.set(-3, 1, -2);
             scene.add(fillLight);
 
-            // Ambient Fill (prevents dark shadow pitch)
-            const ambientLight = new THREE.AmbientLight(0xffffff, 0.25);
-            scene.add(ambientLight);
+            // Soft rim light
+            const rimLight = new THREE.DirectionalLight(0xfb7185, 0.2);
+            rimLight.position.set(0, -3, 2);
+            scene.add(rimLight);
         }}
         setupLighting(mainScene);
         setupLighting(nnScene);
@@ -515,14 +537,12 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
                 geometry.setIndex(new THREE.BufferAttribute(faces, 1));
                 geometry.computeVertexNormals();
 
-                // Vibrant Blue for GT, Vibrant Coral Red for Generated
-                const colorHex = shapeData.is_gt ? 0x3b82f6 : 0xef4444;
-
-                // Soft Matte Standard Material (High roughness -> no shiny glare!)
+                // Blue for GT, Red for Generated (using MeshStandardMaterial with satin matte finish)
+                const colorHex = shapeData.is_gt ? 0x38bdf8 : 0xfb7185;
                 const material = new THREE.MeshStandardMaterial({{
                     color: colorHex,
-                    roughness: 0.55,
-                    metalness: 0.10,
+                    roughness: 0.48,      // Satin-matte finish (no plastic glare!)
+                    metalness: 0.12,       // Gentle surface response
                     side: THREE.DoubleSide
                 }});
 
@@ -532,7 +552,7 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
                 const positions = new Float32Array(shapeData.pc.flat());
                 geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
-                const colorHex = shapeData.is_gt ? 0x3b82f6 : 0xef4444;
+                const colorHex = shapeData.is_gt ? 0x38bdf8 : 0xfb7185;
                 const material = new THREE.PointsMaterial({{
                     color: colorHex,
                     size: 0.035,
@@ -583,27 +603,6 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
             nnScene.add(currentNNMesh);
         }}
 
-        // Minimize / Expand 1-NN Secondary Card Toggle
-        const toggleBtn = document.getElementById('nn-toggle-btn');
-        const nnCard = document.getElementById('nn-card');
-
-        toggleBtn.addEventListener('click', (e) => {{
-            e.stopPropagation();
-            nnCard.classList.toggle('collapsed');
-            if (nnCard.classList.contains('collapsed')) {{
-                toggleBtn.innerText = '+';
-                toggleBtn.title = 'Expand 1-NN Viewer';
-            }} else {{
-                toggleBtn.innerText = '−';
-                toggleBtn.title = 'Minimize 1-NN Viewer';
-                setTimeout(() => {{
-                    nnCamera.aspect = nnHolder.clientWidth / nnHolder.clientHeight;
-                    nnCamera.updateProjectionMatrix();
-                    nnRenderer.setSize(nnHolder.clientWidth, nnHolder.clientHeight);
-                }}, 60);
-            }}
-        }});
-
         // Handle Plotly click events
         document.getElementById('plot-container').on('plotly_click', function(data) {{
             if (data.points.length > 0) {{
@@ -629,9 +628,7 @@ def build_interactive_html(shapes_data, mds_coords, nn_indices, D_matrix, run_na
             nnCamera.updateProjectionMatrix();
 
             mainRenderer.render(mainScene, mainCamera);
-            if (!nnCard.classList.contains('collapsed')) {{
-                nnRenderer.render(nnScene, nnCamera);
-            }}
+            nnRenderer.render(nnScene, nnCamera);
         }}
         animate();
 
