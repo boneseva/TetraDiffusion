@@ -77,7 +77,9 @@ def save_intermediate_results(run_results, cache_file=None):
 
 def load_gt_data(gt_dir, num_points=2048):
     """Load all ground truth meshes, extract morphological features, and sample normalized point clouds."""
-    gt_files = glob.glob(os.path.join(gt_dir, "*.obj"))
+    gt_files = sorted(glob.glob(os.path.join(gt_dir, "*.obj")))
+    if not gt_files:
+        gt_files = sorted(glob.glob(os.path.join(gt_dir, "**", "*.obj"), recursive=True))
     if not gt_files:
         log(f"WARNING: No ground truth OBJ files found in {gt_dir}")
         return [], []
