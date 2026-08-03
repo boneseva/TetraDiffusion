@@ -106,7 +106,7 @@ def load_gt_data(gt_dir, num_points=2048, max_gt=None):
             gt_features.append(feat)
         except Exception as e:
             log(f"  Error loading GT file {f}: {e}")
-        if i % 10 == 0 or i == len(gt_files):
+        if i % 5 == 0 or i == len(gt_files):
             log(f"  GT Progress: {i}/{len(gt_files)} loaded ({time.time() - t0:.1f}s)")
     return gt_pcs, gt_features
 

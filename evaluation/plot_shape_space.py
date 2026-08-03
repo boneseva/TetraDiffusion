@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-plot_shape_space.py — Visualize 3D shape space manifold with ACTUAL 3D shape thumbnails.
-
-Projects the pairwise Chamfer Distance matrix between Ground Truth (Real) and
-Generated (Fake) 3D shapes into 2D using Multidimensional Scaling (MDS).
-
-Renders actual 3D shape thumbnails at their 2D MDS coordinates:
-  - Ground Truth (GT) shapes: Blue border thumbnails
-  - Generated shapes: Red border thumbnails
-  - 1-NN Nearest-Neighbor arrows connecting generated shapes to their closest GT match.
-"""
 
 import os
 import glob
@@ -20,9 +9,10 @@ import numpy as np
 import scipy.spatial
 import trimesh
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for cluster / headless execution
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.offsetbox import OffsetImage, AnnotationBbox
+
 
 def normalize_point_cloud(pc):
     """Center point cloud at origin and scale to unit bounding sphere."""
@@ -128,7 +118,15 @@ def main():
     args = parser.parse_args()
 
     gt_files = sorted(glob.glob(os.path.join(args.gt_dir, "*.obj")))
-    gen_files = sorted(glob.glob(os.path.join(args.run_dir, "*.obj")))[:args.max_gen]
+    if not gt_files:
+        gt_files = sorted(glob.glob(os.path.join(args.gt_dir, "**", "*.obj"), recursive=True))
+
+    gen_files = sorted(glob.glob(os.path.join(args.run_dir, "*.obj")))
+    if not gen_files:
+        gen_files = sorted(glob.glob(os.path.join(args.run_dir, "**", "*.obj"), recursive=True))
+
+    gt_files = gt_files[:50]
+    gen_files = gen_files[:args.max_gen]
 
     if not gt_files or not gen_files:
         print(f"Error: Need both GT files ({len(gt_files)}) and Gen files ({len(gen_files)}).")

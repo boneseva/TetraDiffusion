@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""
-plot_shape_space_html.py — Interactive Web HTML 3D Shape Space & Orbit Mesh Explorer.
-
-Generates a standalone, self-contained interactive HTML web page with:
-  1. Modern 2D MDS Metric Space Map (Plotly.js): Click any shape dot to inspect it.
-  2. Interactive 3D WebGL Orbit Mesh Viewer (Three.js): Soft satin-shaded 3D surface meshes
-     (GT vs. Generated organelles) with realistic hemisphere lighting (no harsh glare).
-  3. Minimizable 1-NN Secondary 3D Viewer: A floating inset 3D viewer showing the selected
-     shape's 1-NN nearest neighbor, with a toggle button to collapse/minimize it, synchronized camera rotation,
-     and color coding (GT vs. Gen).
-"""
 
 import os
 import glob
@@ -19,6 +8,7 @@ import json
 import numpy as np
 import scipy.spatial
 import trimesh
+
 
 def process_mesh_and_pc(file_path, num_points=1500):
     """
@@ -658,7 +648,16 @@ def main():
     args = parser.parse_args()
 
     gt_files = sorted(glob.glob(os.path.join(args.gt_dir, "*.obj")))
-    gen_files = sorted(glob.glob(os.path.join(args.run_dir, "*.obj")))[:args.max_gen]
+    if not gt_files:
+        gt_files = sorted(glob.glob(os.path.join(args.gt_dir, "**", "*.obj"), recursive=True))
+
+    gen_files = sorted(glob.glob(os.path.join(args.run_dir, "*.obj")))
+    if not gen_files:
+        gen_files = sorted(glob.glob(os.path.join(args.run_dir, "**", "*.obj"), recursive=True))
+
+    # Cap shapes for clean, fast visual rendering
+    gt_files = gt_files[:50]
+    gen_files = gen_files[:args.max_gen]
 
     if not gt_files or not gen_files:
         print(f"Error: Need both GT files ({len(gt_files)}) and Gen files ({len(gen_files)}).")
