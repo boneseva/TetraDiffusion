@@ -214,10 +214,93 @@ def generate_run_visualizations(root_dir, gt_dir, force=False):
     except Exception as e:
         log(f"    Warning: Plot generation failed for '{root_dir}': {e}")
 
+def resolve_gt_dir(run_dir, default_gt_dir=None):
+    """
+    Automatically resolve the ground truth OBJ directory for a given run folder.
+    Inspects config.yaml, inference_manifest.json, or folder name.
+    """
+    run_parent = run_dir
+    while os.path.basename(run_parent) and "inference_" in os.path.basename(run_parent):
+        run_parent = os.path.dirname(run_parent)
+
+    config_path = os.path.join(run_parent, "config.yaml")
+    category = None
+    data_path = None
+
+    if os.path.exists(config_path):
+        try:
+            import yaml
+            with open(config_path, 'r') as f:
+                cfg_data = yaml.safe_load(f)
+            if isinstance(cfg_data, dict):
+                dataset_cfg = cfg_data.get('dataset', {})
+                if isinstance(dataset_cfg, dict):
+                    category = dataset_cfg.get('category')
+                    data_path = dataset_cfg.get('data_path')
+                category = category or cfg_data.get('category')
+                data_path = data_path or cfg_data.get('data_path')
+        except Exception:
+            pass
+
+    manifest_path = os.path.join(run_dir, "inference_manifest.json")
+    if not category and os.path.exists(manifest_path):
+        try:
+            with open(manifest_path, 'r') as f:
+                manifest = json.load(f)
+            category = manifest.get('organelle') or manifest.get('category')
+        except Exception:
+            pass
+
+    folder_name = os.path.basename(run_parent).lower()
+    if not category:
+        if "er" in folder_name:
+            category = "er"
+        elif "golgi" in folder_name:
+            category = "golgi"
+        elif "mito" in folder_name:
+            category = "mito"
+        elif "lyso" in folder_name:
+            category = "lyso"
+        elif "fv" in folder_name:
+            category = "fv"
+
+    cat_map = {
+        "endoplasmic_reticulum": "er", "er": "er",
+        "golgi": "golgi",
+        "mitochondria": "mito", "mito": "mito",
+        "lysosome": "lyso", "lyso": "lyso",
+        "vacuole": "fv", "fv": "fv"
+    }
+    norm_cat = cat_map.get(str(category).lower(), str(category).lower()) if category else None
+
+    repo_root = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+    is_urocell = "urocell" in folder_name or (data_path and "urocell" in str(data_path).lower())
+
+    search_dirs = []
+    if is_urocell:
+        search_dirs.append(os.path.join(repo_root, "data_urocell", "organelles"))
+    search_dirs.extend([
+        os.path.join(repo_root, "data", "organelles"),
+        os.path.join(repo_root, "data_urocell", "organelles"),
+        os.path.join(repo_root, "data_test", "organelles")
+    ])
+
+    if norm_cat:
+        for sdir in search_dirs:
+            for sub in [norm_cat, norm_cat.upper(), norm_cat.capitalize()]:
+                cand = os.path.join(sdir, sub)
+                if os.path.isdir(cand) and glob.glob(os.path.join(cand, "*.obj")):
+                    return cand
+
+    if default_gt_dir and os.path.isdir(default_gt_dir) and glob.glob(os.path.join(default_gt_dir, "*.obj")):
+        return default_gt_dir
+
+    return None
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate and compare generated 3D meshes to GT database.")
     parser.add_argument("--runs_dir", type=str, default="../runs", help="Directory where training runs are stored.")
-    parser.add_argument("--gt_dir", type=str, default="../data_test/organelles/lyso", help="Directory with GT meshes.")
+    parser.add_argument("--gt_dir", type=str, default=None, help="Directory with GT meshes (default: auto-detect per run).")
     parser.add_argument("--fscore_thresh", type=float, default=0.05, help="Threshold distance for F-Score (unit sphere scale).")
     parser.add_argument("--points", type=int, default=2048, help="Number of points to sample from each mesh.")
     parser.add_argument("--filter", type=str, default=None, help="Pattern/prefix to filter run directories (e.g., 'abl_' or '*bio*').")
@@ -225,13 +308,13 @@ def main():
     parser.add_argument("--no_plots", action="store_true", help="Disable automatic plot & HTML explorer generation.")
     args = parser.parse_args()
     
-    # 1. Load Ground Truth datasets
-    gt_pcs, gt_features = load_gt_data(args.gt_dir, num_points=args.points)
-    if not gt_pcs:
-        log("Error: Ground truth meshes are required for evaluation. Exiting.")
-        return
-        
-    # 2. Scan for evaluation folders containing OBJ files
+    # Cache GT datasets by path: gt_dir -> (pcs, features)
+    gt_cache = {}
+    
+    # Default fallback GT if specified
+    default_fallback_gt = args.gt_dir or os.path.join(SCRIPT_DIR, "..", "data_test", "organelles", "lyso")
+
+    # 1. Scan for evaluation folders containing OBJ files
     filter_msg = f" (filtered by: '{args.filter}')" if args.filter else ""
     log(f"\nScanning for directories containing generated meshes in {args.runs_dir}{filter_msg}...")
     
@@ -288,13 +371,31 @@ def main():
     evaluated_count = 0
 
     for idx, (root, rel_path, count) in enumerate(candidate_dirs, 1):
+        target_gt_dir = resolve_gt_dir(root, default_gt_dir=args.gt_dir or default_fallback_gt)
+        
         if rel_path in run_results and not args.force:
             log(f"[{idx}/{len(candidate_dirs)}] Skipping cached '{rel_path}'")
-            if not args.no_plots:
-                generate_run_visualizations(root, args.gt_dir, force=args.force)
+            if not args.no_plots and target_gt_dir:
+                generate_run_visualizations(root, target_gt_dir, force=args.force)
             continue
 
-        log(f"[{idx}/{len(candidate_dirs)}] Evaluating '{rel_path}' ({count} meshes)...")
+        if not target_gt_dir:
+            log(f"[{idx}/{len(candidate_dirs)}] Skipping '{rel_path}': Could not resolve GT directory.")
+            continue
+
+        if target_gt_dir not in gt_cache:
+            log(f"  [GT] Loading ground truth dataset from: {target_gt_dir}")
+            pcs, feats = load_gt_data(target_gt_dir, num_points=args.points)
+            gt_cache[target_gt_dir] = (pcs, feats)
+        else:
+            pcs, feats = gt_cache[target_gt_dir]
+
+        gt_pcs, gt_features = pcs, feats
+        if not gt_pcs:
+            log(f"[{idx}/{len(candidate_dirs)}] Skipping '{rel_path}': No valid GT meshes in {target_gt_dir}.")
+            continue
+
+        log(f"[{idx}/{len(candidate_dirs)}] Evaluating '{rel_path}' ({count} meshes) against GT '{os.path.basename(target_gt_dir)}'...")
         run_start = time.time()
         metrics = evaluate_run(root, gt_pcs, gt_features, num_points=args.points, fscore_threshold=args.fscore_thresh)
         run_time = time.time() - run_start
@@ -306,7 +407,7 @@ def main():
             save_intermediate_results(run_results, cache_file=cache_file)
             
             if not args.no_plots:
-                generate_run_visualizations(root, args.gt_dir, force=args.force)
+                generate_run_visualizations(root, target_gt_dir, force=args.force)
                 
             log(f"    [Saved live checkpoint to evaluation/results/evaluation_summary.md and .csv]")
         else:

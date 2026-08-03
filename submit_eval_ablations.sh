@@ -42,7 +42,7 @@ fi
 
 # Defaults matching ablation_fast_sweep.sh (UroCell lysosome dataset)
 RUNS_DIR="${REPO_DIR}/runs"
-GT_DIR="${REPO_DIR}/data_test/organelles/lyso"
+GT_DIR=""
 FILTER="abl_"
 POINTS=2048
 FSCORE_THRESH=0.05
@@ -64,10 +64,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "================================================"
-echo "TetraDiffusion Ablation Evaluation"
+echo "TetraDiffusion Evaluation"
 echo "================================================"
 echo "Runs directory  : ${RUNS_DIR}"
-echo "GT directory    : ${GT_DIR}"
+echo "GT directory    : ${GT_DIR:-auto-detect per run}"
 echo "Run Filter      : ${FILTER}"
 echo "Point cloud size: ${POINTS}"
 echo "F-Score threshold: ${FSCORE_THRESH}"
@@ -76,9 +76,13 @@ echo "Node            : $(hostname)"
 echo "Date            : $(date)"
 echo "================================================"
 
-if [[ ! -d "$GT_DIR" ]]; then
-    echo "ERROR: Ground truth directory not found at ${GT_DIR}" >&2
-    exit 1
+GT_ARGS=()
+if [[ -n "$GT_DIR" ]]; then
+    if [[ ! -d "$GT_DIR" ]]; then
+        echo "ERROR: Specified Ground truth directory not found at ${GT_DIR}" >&2
+        exit 1
+    fi
+    GT_ARGS=(--gt_dir "$GT_DIR")
 fi
 
 CONTAINER="${CONTAINER:-${REPO_DIR}/pytorch2604_tetradiff.sqfs}"
@@ -92,7 +96,7 @@ if [[ -f "$CONTAINER" && -n "${SLURM_JOB_ID:-}" ]]; then
 
     srun $PYXIS_FLAGS python3 evaluation/compare.py \
         --runs_dir "$RUNS_DIR" \
-        --gt_dir "$GT_DIR" \
+        "${GT_ARGS[@]}" \
         --filter "$FILTER" \
         --points "$POINTS" \
         --fscore_thresh "$FSCORE_THRESH" \
@@ -102,7 +106,7 @@ else
     echo "Launching Python evaluation using $(which python3)..."
     python3 evaluation/compare.py \
         --runs_dir "$RUNS_DIR" \
-        --gt_dir "$GT_DIR" \
+        "${GT_ARGS[@]}" \
         --filter "$FILTER" \
         --points "$POINTS" \
         --fscore_thresh "$FSCORE_THRESH" \
