@@ -75,13 +75,21 @@ def save_intermediate_results(run_results, cache_file=None):
         f.write("* **Connected_Components**: Average number of disconnected mesh parts (ideal = 1.0; >1.0 indicates background noise/floaters).\n")
         f.write("* **Degenerate_Faces**: Fraction of faces with near-zero area (lower = better mesh quality).\n")
 
-def load_gt_data(gt_dir, num_points=2048):
-    """Load all ground truth meshes, extract morphological features, and sample normalized point clouds."""
-    gt_files = glob.glob(os.path.join(gt_dir, "*.obj"))
+def load_gt_data(gt_dir, num_points=2048, max_gt=None):
+    """Load ground truth meshes, extract morphological features, and sample normalized point clouds."""
+    gt_files = sorted(glob.glob(os.path.join(gt_dir, "*.obj")))
+    if not gt_files:
+        gt_files = sorted(glob.glob(os.path.join(gt_dir, "**", "*.obj"), recursive=True))
     if not gt_files:
         log(f"WARNING: No ground truth OBJ files found in {gt_dir}")
         return [], []
-        
+
+    if max_gt and len(gt_files) > max_gt:
+        np.random.seed(42)
+        indices = np.random.choice(len(gt_files), max_gt, replace=False)
+        gt_files = [gt_files[i] for i in sorted(indices)]
+        log(f"  [GT] Capped ground truth loading to {max_gt} samples (out of {len(gt_files)} total).")
+
     log(f"Loading {len(gt_files)} ground truth meshes from {gt_dir}...")
     gt_pcs = []
     gt_features = []
@@ -330,6 +338,7 @@ def main():
     parser.add_argument("--filter", type=str, default=None, help="Pattern/prefix to filter run directories (e.g., 'abl_' or '*bio*').")
     parser.add_argument("--force", action="store_true", help="Force re-evaluating runs even if cached in evaluation/results/cache_evaluation.json.")
     parser.add_argument("--no_plots", action="store_true", help="Disable automatic plot & HTML explorer generation.")
+    parser.add_argument("--max_gt", type=int, default=None, help="Maximum number of GT samples to load for evaluation (default: all).")
     args = parser.parse_args()
     
     # Cache GT datasets by path: gt_dir -> (pcs, features)
@@ -406,7 +415,7 @@ def main():
 
         if target_gt_dir not in gt_cache:
             log(f"  [GT] Loading ground truth dataset from: {target_gt_dir}")
-            pcs, feats = load_gt_data(target_gt_dir, num_points=args.points)
+            pcs, feats = load_gt_data(target_gt_dir, num_points=args.points, max_gt=args.max_gt)
             gt_cache[target_gt_dir] = (pcs, feats)
         else:
             pcs, feats = gt_cache[target_gt_dir]

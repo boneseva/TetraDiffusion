@@ -9,6 +9,7 @@ preprocessing/
 *.zip
 *.pdf
 *.blend
+*.html
 runs/
 
 # Byte-compiled / optimized / DLL files
