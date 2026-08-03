@@ -214,6 +214,15 @@ def generate_run_visualizations(root_dir, gt_dir, force=False):
     except Exception as e:
         log(f"    Warning: Plot generation failed for '{root_dir}': {e}")
 
+def _dir_has_objs(directory):
+    if not os.path.isdir(directory):
+        return False
+    objs = glob.glob(os.path.join(directory, "*.obj"))
+    if objs:
+        return True
+    objs = glob.glob(os.path.join(directory, "**", "*.obj"), recursive=True)
+    return len(objs) > 0
+
 def resolve_gt_dir(run_dir, default_gt_dir=None):
     """
     Automatically resolve the ground truth OBJ directory for a given run folder.
@@ -264,36 +273,51 @@ def resolve_gt_dir(run_dir, default_gt_dir=None):
         elif "fv" in folder_name:
             category = "fv"
 
-    cat_map = {
-        "endoplasmic_reticulum": "er", "er": "er",
-        "golgi": "golgi",
-        "mitochondria": "mito", "mito": "mito",
-        "lysosome": "lyso", "lyso": "lyso",
-        "vacuole": "fv", "fv": "fv"
-    }
-    norm_cat = cat_map.get(str(category).lower(), str(category).lower()) if category else None
+    category_variations = []
+    if category:
+        cat_str = str(category).strip()
+        cat_lower = cat_str.lower()
+        if "er" in cat_lower or "endoplasmic" in cat_lower:
+            category_variations = ["ER", "er", "endoplasmic_reticulum"]
+        elif "golgi" in cat_lower:
+            category_variations = ["Golgi", "golgi"]
+        elif "mito" in cat_lower:
+            category_variations = ["Mitochondria", "mito", "mitochondria"]
+        elif "lyso" in cat_lower:
+            category_variations = ["Lysosome", "lyso", "lysosome"]
+        elif "fv" in cat_lower or "vacuole" in cat_lower:
+            category_variations = ["fv", "vacuole", "vacuoles"]
+        else:
+            category_variations = [cat_str, cat_str.upper(), cat_str.lower(), cat_str.capitalize()]
 
     repo_root = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
     is_urocell = "urocell" in folder_name or (data_path and "urocell" in str(data_path).lower())
 
-    search_dirs = []
     if is_urocell:
-        search_dirs.append(os.path.join(repo_root, "data_urocell", "organelles"))
-    search_dirs.extend([
-        os.path.join(repo_root, "data", "organelles"),
-        os.path.join(repo_root, "data_urocell", "organelles"),
-        os.path.join(repo_root, "data_test", "organelles")
-    ])
+        search_roots = [
+            os.path.join(repo_root, "data_urocell", "organelles"),
+            os.path.join(repo_root, "data_urocell", "organelles_raw"),
+            os.path.join(repo_root, "data", "organelles"),
+            os.path.join(repo_root, "data", "organelles_raw"),
+            os.path.join(repo_root, "data_test", "organelles"),
+        ]
+    else:
+        search_roots = [
+            os.path.join(repo_root, "data", "organelles"),
+            os.path.join(repo_root, "data", "organelles_raw"),
+            os.path.join(repo_root, "data_urocell", "organelles"),
+            os.path.join(repo_root, "data_urocell", "organelles_raw"),
+            os.path.join(repo_root, "data_test", "organelles"),
+        ]
 
-    if norm_cat:
-        for sdir in search_dirs:
-            for sub in [norm_cat, norm_cat.upper(), norm_cat.capitalize()]:
-                cand = os.path.join(sdir, sub)
-                if os.path.isdir(cand) and glob.glob(os.path.join(cand, "*.obj")):
-                    return cand
+    for sroot in search_roots:
+        for cvar in category_variations:
+            cand = os.path.join(sroot, cvar)
+            if _dir_has_objs(cand):
+                return os.path.abspath(cand)
 
-    if default_gt_dir and os.path.isdir(default_gt_dir) and glob.glob(os.path.join(default_gt_dir, "*.obj")):
-        return default_gt_dir
+    if default_gt_dir and _dir_has_objs(default_gt_dir):
+        return os.path.abspath(default_gt_dir)
 
     return None
 
@@ -311,9 +335,6 @@ def main():
     # Cache GT datasets by path: gt_dir -> (pcs, features)
     gt_cache = {}
     
-    # Default fallback GT if specified
-    default_fallback_gt = args.gt_dir or os.path.join(SCRIPT_DIR, "..", "data_test", "organelles", "lyso")
-
     # 1. Scan for evaluation folders containing OBJ files
     filter_msg = f" (filtered by: '{args.filter}')" if args.filter else ""
     log(f"\nScanning for directories containing generated meshes in {args.runs_dir}{filter_msg}...")
@@ -371,7 +392,7 @@ def main():
     evaluated_count = 0
 
     for idx, (root, rel_path, count) in enumerate(candidate_dirs, 1):
-        target_gt_dir = resolve_gt_dir(root, default_gt_dir=args.gt_dir or default_fallback_gt)
+        target_gt_dir = resolve_gt_dir(root, default_gt_dir=args.gt_dir)
         
         if rel_path in run_results and not args.force:
             log(f"[{idx}/{len(candidate_dirs)}] Skipping cached '{rel_path}'")
