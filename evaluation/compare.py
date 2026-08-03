@@ -214,12 +214,11 @@ def generate_run_visualizations(root_dir, gt_dir, force=False):
         # Static plot
         if not os.path.exists(out_png) or force:
             log(f"    - Generating static plot: {out_png}")
-            os.system(f"python3 '{plot_script}' --run_dir '{root_dir}' --gt_dir '{gt_dir}' >/dev/null 2>&1")
+            os.system(f'"{sys.executable}" "{plot_script}" --run_dir "{root_dir}" --gt_dir "{gt_dir}"')
 
-        # Interactive HTML app
-        if not os.path.exists(out_html) or force:
-            log(f"    - Generating interactive HTML: {out_html}")
-            os.system(f"python3 '{html_script}' --run_dir '{root_dir}' --gt_dir '{gt_dir}' >/dev/null 2>&1")
+        # Interactive 3D Mesh Web HTML app (always regenerate to update with latest 3D mesh viewer)
+        log(f"    - Generating interactive 3D Mesh HTML: {out_html}")
+        os.system(f'"{sys.executable}" "{html_script}" --run_dir "{root_dir}" --gt_dir "{gt_dir}"')
     except Exception as e:
         log(f"    Warning: Plot generation failed for '{root_dir}': {e}")
 

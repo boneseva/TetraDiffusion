@@ -172,8 +172,21 @@ def compute_morphological_features(mesh):
     if mesh is None or isinstance(mesh, trimesh.PointCloud) or not hasattr(mesh, 'vertices') or len(mesh.vertices) == 0:
         return {"volume": 0.0, "area": 0.0, "aspect_ratio": 1.0}
 
-    vol = abs(getattr(mesh, 'volume', 0.0))
-    area = getattr(mesh, 'area', 0.0)
+    area = float(getattr(mesh, 'area', 0.0))
+
+    # Fast & safe volume extraction (avoid expensive/hanging repair on non-watertight meshes)
+    vol = 0.0
+    if getattr(mesh, 'is_watertight', False):
+        try:
+            vol = abs(float(mesh.volume))
+        except Exception:
+            vol = 0.0
+    else:
+        try:
+            # Quick convex hull volume approximation for open/non-watertight meshes
+            vol = abs(float(mesh.convex_hull.volume))
+        except Exception:
+            vol = 0.0
 
     try:
         extents = mesh.extents
@@ -230,9 +243,13 @@ def compute_sphericity(mesh):
     if mesh is None or isinstance(mesh, trimesh.PointCloud) or not hasattr(mesh, 'faces') or len(getattr(mesh, 'faces', [])) == 0:
         return 0.0
 
+    # Only calculate sphericity for watertight volume meshes to prevent hanging
+    if not getattr(mesh, 'is_watertight', False):
+        return 0.0
+
     try:
-        vol = abs(getattr(mesh, 'volume', 0.0))
-        area = getattr(mesh, 'area', 0.0)
+        vol = abs(float(mesh.volume))
+        area = float(mesh.area)
         if area < 1e-7:
             return 0.0
         sphericity = (np.pi**(1.0/3.0) * (6.0 * vol)**(2.0/3.0)) / area
