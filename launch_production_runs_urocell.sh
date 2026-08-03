@@ -55,7 +55,7 @@ submit_run() {
         --urocell
         --category          "$cat"
         --name              "$name"
-        --num_steps         400000
+        --num_steps         200000
         --batch_size        16
         --test_every        2000
         --offset_noise      0.1
