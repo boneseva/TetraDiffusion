@@ -3,6 +3,7 @@ import sys
 import time
 import glob
 import json
+import re
 import argparse
 import numpy as np
 import pandas as pd
@@ -252,10 +253,12 @@ def resolve_gt_dir(run_dir, default_gt_dir=None):
             if isinstance(cfg_data, dict):
                 dataset_cfg = cfg_data.get('dataset', {})
                 if isinstance(dataset_cfg, dict):
-                    category = dataset_cfg.get('category')
+                    category = dataset_cfg.get('category') or dataset_cfg.get('shapenet_ids') or dataset_cfg.get('shapenet_id')
                     data_path = dataset_cfg.get('data_path')
-                category = category or cfg_data.get('category')
+                category = category or cfg_data.get('category') or cfg_data.get('shapenet_ids') or cfg_data.get('shapenet_id')
                 data_path = data_path or cfg_data.get('data_path')
+                if isinstance(category, list) and len(category) > 0:
+                    category = category[0]
         except Exception:
             pass
 
@@ -264,22 +267,24 @@ def resolve_gt_dir(run_dir, default_gt_dir=None):
         try:
             with open(manifest_path, 'r') as f:
                 manifest = json.load(f)
-            category = manifest.get('organelle') or manifest.get('category')
+            category = manifest.get('organelle') or manifest.get('category') or manifest.get('shapenet_id')
         except Exception:
             pass
 
-    folder_name = os.path.basename(run_parent).lower()
+    # Clean path words (split by _, /, -, .) excluding framework words like "inference" to prevent "infERence" false-matching "er"
+    path_words = [w.lower() for w in re.split(r'[/\\_.-]+', f"{run_dir} {run_parent}") if w.lower() not in ('inference', 'results', 'runs', 'eval', 'evaluation', 'output')]
+
     if not category:
-        if "er" in folder_name:
-            category = "er"
-        elif "golgi" in folder_name:
+        if any("golgi" in w for w in path_words):
             category = "golgi"
-        elif "mito" in folder_name:
-            category = "mito"
-        elif "lyso" in folder_name:
+        elif any("lyso" in w or "lysosome" in w for w in path_words):
             category = "lyso"
-        elif "fv" in folder_name:
+        elif any("mito" in w or "mitochondria" in w for w in path_words):
+            category = "mito"
+        elif any("fv" == w or "vacuole" in w for w in path_words):
             category = "fv"
+        elif any("er" == w or "endoplasmic" in w for w in path_words):
+            category = "er"
 
     category_variations = []
     if category:
@@ -298,7 +303,17 @@ def resolve_gt_dir(run_dir, default_gt_dir=None):
         else:
             category_variations = [cat_str, cat_str.upper(), cat_str.lower(), cat_str.capitalize()]
 
+    # If data_path from config exists and has obj files, check it first
+    if data_path:
+        if _dir_has_objs(data_path):
+            return os.path.abspath(data_path)
+        for cvar in category_variations:
+            cand = os.path.join(data_path, cvar)
+            if _dir_has_objs(cand):
+                return os.path.abspath(cand)
+
     repo_root = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+    folder_name = f"{run_dir} {run_parent}".lower()
     is_urocell = "urocell" in folder_name or (data_path and "urocell" in str(data_path).lower())
 
     if is_urocell:
