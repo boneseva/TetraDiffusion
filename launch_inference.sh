@@ -28,12 +28,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNS_DIR="${SCRIPT_DIR}/runs"
-
 RUN_NAME=""
+FILTER=""
 FORCE_LOAD_WEIGHTS=true
 LIST_RUNS=false
 INFERENCE_MODE=""
-PASSTHROUGH_ARGS=()   # flags forwarded to every sbatch call (excludes --run_name, --list_runs)
+PASSTHROUGH_ARGS=()
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -41,8 +41,8 @@ is_inference_ready_run() {
 	local run_dir="$1"
 	[[ -d "$run_dir" && -f "$run_dir/config.yaml" && -f "$run_dir/ds.pth" ]] || return 1
 	if [[ "$FORCE_LOAD_WEIGHTS" == true ]]; then
-		compgen -G "$run_dir/model-*.pt" > /dev/null
-		return
+		compgen -G "$run_dir/model-*.pt" > /dev/null 2>&1
+		return $?
 	fi
 	return 0
 }
@@ -52,18 +52,22 @@ get_run_sort_key() {
 	if [[ "$run_name" =~ ([0-9]{8})_([0-9]{4})([0-9]{2})?$ ]]; then
 		printf '2%s%s%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]:-00}"
 	else
-		printf '1%020d' "$(stat -c %Y "$1")"
+		printf '1%020d' "$(stat -c %Y "$1" 2>/dev/null || echo 0)"
 	fi
 }
 
 # Returns all inference-ready run names, newest-first (one per line)
 collect_ready_runs() {
-	local run_dir
+	local run_dir run_name
 	shopt -s nullglob
 	for run_dir in "$RUNS_DIR"/*; do
 		[[ -d "$run_dir" ]] || continue
+		run_name="$(basename "$run_dir")"
+		if [[ -n "$FILTER" && "$run_name" != *"$FILTER"* ]]; then
+			continue
+		fi
 		is_inference_ready_run "$run_dir" || continue
-		printf '%s\t%s\n' "$(get_run_sort_key "$run_dir")" "$(basename "$run_dir")"
+		printf '%s\t%s\n' "$(get_run_sort_key "$run_dir")" "$run_name"
 	done | sort -rn | cut -f2-
 	shopt -u nullglob
 }
@@ -73,8 +77,11 @@ list_available_runs() {
 	shopt -s nullglob
 	for run_dir in "$RUNS_DIR"/*; do
 		[[ -d "$run_dir" ]] || continue
-		[[ -f "$run_dir/config.yaml" && -f "$run_dir/ds.pth" ]] || continue
 		run_name="$(basename "$run_dir")"
+		if [[ -n "$FILTER" && "$run_name" != *"$FILTER"* ]]; then
+			continue
+		fi
+		[[ -f "$run_dir/config.yaml" && -f "$run_dir/ds.pth" ]] || continue
 		if compgen -G "$run_dir/model-*.pt" > /dev/null 2>&1; then
 			checkpoint_status="checkpoint ✓"
 		else
@@ -90,6 +97,7 @@ list_available_runs() {
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 		--run_name)           RUN_NAME="$2";               shift 2 ;;
+		--filter)             FILTER="$2";                 shift 2 ;;
 		--list_runs)          LIST_RUNS=true;               shift   ;;
 		--comparison_mode)    [[ -n "$INFERENCE_MODE" && "$INFERENCE_MODE" != "comparison" ]] && { echo "ERROR: conflicting inference mode flags"; exit 1; }
 		                      INFERENCE_MODE="comparison"; shift   ;;
