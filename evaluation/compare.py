@@ -303,14 +303,14 @@ def resolve_gt_dir(run_dir, default_gt_dir=None):
         else:
             category_variations = [cat_str, cat_str.upper(), cat_str.lower(), cat_str.capitalize()]
 
-    # If data_path from config exists and has obj files, check it first
+    # 1. If data_path from config exists, FIRST check for category subfolders inside data_path
     if data_path:
-        if _dir_has_objs(data_path):
-            return os.path.abspath(data_path)
         for cvar in category_variations:
             cand = os.path.join(data_path, cvar)
             if _dir_has_objs(cand):
                 return os.path.abspath(cand)
+        if _dir_has_objs(data_path):
+            return os.path.abspath(data_path)
 
     repo_root = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
     folder_name = f"{run_dir} {run_parent}".lower()
@@ -318,16 +318,20 @@ def resolve_gt_dir(run_dir, default_gt_dir=None):
 
     if is_urocell:
         search_roots = [
+            os.path.join(repo_root, "data_urocell", "preprocessed"),
             os.path.join(repo_root, "data_urocell", "organelles"),
             os.path.join(repo_root, "data_urocell", "organelles_raw"),
+            os.path.join(repo_root, "data", "preprocessed"),
             os.path.join(repo_root, "data", "organelles"),
             os.path.join(repo_root, "data", "organelles_raw"),
             os.path.join(repo_root, "data_test", "organelles"),
         ]
     else:
         search_roots = [
+            os.path.join(repo_root, "data", "preprocessed"),
             os.path.join(repo_root, "data", "organelles"),
             os.path.join(repo_root, "data", "organelles_raw"),
+            os.path.join(repo_root, "data_urocell", "preprocessed"),
             os.path.join(repo_root, "data_urocell", "organelles"),
             os.path.join(repo_root, "data_urocell", "organelles_raw"),
             os.path.join(repo_root, "data_test", "organelles"),
