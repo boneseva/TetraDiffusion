@@ -380,7 +380,7 @@ def main():
                 top_dir = rel_path.split(os.sep)[0]
                 pattern = args.filter
                 if not ('*' in pattern or '?' in pattern):
-                    pattern = f"{pattern}*"
+                    pattern = f"*{pattern}*"
                 
                 if not fnmatch.fnmatch(top_dir.lower(), pattern.lower()):
                     continue
