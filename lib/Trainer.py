@@ -77,18 +77,32 @@ class Trainer(object):
             wandb_resume = "never"
             print("[Trainer] WandB: starting new run")
 
-        run = wandb.init(
-            project=getattr(cfg, 'wandb_project', 'TetraDiffusion'),
-            name=getattr(cfg, 'name', None),
-            config=OmegaConf.to_container(cfg, resolve=True),
-            resume=wandb_resume,
-            id=wandb_id,
-            settings=wandb.Settings(init_timeout=300),
-        )
+        try:
+            run = wandb.init(
+                project=getattr(cfg, 'wandb_project', 'TetraDiffusion'),
+                name=getattr(cfg, 'name', None),
+                config=OmegaConf.to_container(cfg, resolve=True),
+                resume=wandb_resume,
+                id=wandb_id,
+                settings=wandb.Settings(init_timeout=300),
+            )
+        except Exception as e:
+            if wandb_id is not None:
+                print(f"[Trainer] WandB resume failed for id='{wandb_id}' ({e}). Falling back to starting a new WandB run ID.")
+                wandb_id = None
+                wandb_resume = "never"
+                run = wandb.init(
+                    project=getattr(cfg, 'wandb_project', 'TetraDiffusion'),
+                    name=getattr(cfg, 'name', None),
+                    config=OmegaConf.to_container(cfg, resolve=True),
+                    resume="never",
+                    id=None,
+                    settings=wandb.Settings(init_timeout=300),
+                )
+            else:
+                raise e
 
-        # Only persist the run id on fresh starts.  During resume we never
-        # overwrite the file — if wandb silently creates a new run instead
-        # of resuming, the original id is preserved for future retries.
+        # Persist run id on fresh starts or when fallback to a new run ID occurred
         if self.accelerator.is_main_process and wandb_resume == "never":
             os.makedirs(config_folder, exist_ok=True)
             with open(wandb_id_file, "w") as f:
