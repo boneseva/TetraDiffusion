@@ -460,15 +460,21 @@ class MeshLoader(Dataset):
             model_id = name_parts[model_id_idx] if model_id_idx is not None else name_parts[-3]
             in_csv = model_id in self.splits["modelId"].values
 
-            # Determine split; default to train if not in CSV or train_split disabled
+            # Determine split; if in CSV use CSV split column, else fallback to deterministic 80/20 split
             is_val = False
-            if self.config.dataset.train_split and in_csv:
-                model_split = self.splits.loc[self.splits["modelId"] == model_id]["split"].values[0]
-                if model_split == "val":
-                    is_val = True
-                elif model_split != "train":
-                    # Unknown split value — skip
-                    continue
+            if self.config.dataset.train_split:
+                if in_csv:
+                    model_split = self.splits.loc[self.splits["modelId"] == model_id]["split"].values[0]
+                    if model_split in ("val", "test"):
+                        is_val = True
+                    elif model_split != "train":
+                        # Unknown split value — skip
+                        continue
+                else:
+                    # Deterministic 80/20 split fallback for samples not in CSV
+                    hash_val = int(hashlib.md5(model_id.encode("utf-8")).hexdigest(), 16)
+                    if (hash_val % 100) < 20:
+                        is_val = True
 
             sdfs, deform, color = torch.load(name, map_location=self.cuda_device, weights_only=False)
             sdfs = torch.tensor(sdfs).to(self.cuda_device)
