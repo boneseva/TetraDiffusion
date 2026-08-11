@@ -28,6 +28,7 @@ NUM_STEPS="15000"
 SEED="42"
 CATEGORY="Mitochondria"
 
+DRY_RUN=false
 SINGLE=false
 TARGET_FRACTION=""
 
