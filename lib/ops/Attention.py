@@ -1,12 +1,12 @@
-import math
 from collections import namedtuple
-
+import math
+from typing import Tuple
+from einops import rearrange, repeat
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
-from einops import rearrange, repeat
+from torch import Tensor, nn
 
-from lib.ops.Misc import RMSNorm, Residual, PreNorm, l2norm
+from lib.ops.Misc import PreNorm, RMSNorm, Residual, l2norm
 
 
 class LinearAttention(nn.Module):
@@ -15,8 +15,7 @@ class LinearAttention(nn.Module):
         self.att = Residual(PreNorm(dim, _LinearAttention(dim, heads=heads, dim_head=dim_head)))
 
     def forward(self, x: Tensor, t: Tensor) -> Tensor:
-        x = self.att(x)
-        return x
+        return self.att(x)
 
 
 class Attention(nn.Module):
@@ -25,14 +24,14 @@ class Attention(nn.Module):
         self.att = Residual(_Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout))
 
     def forward(self, x: Tensor, t: Tensor) -> Tensor:
-        x = self.att(x)
-        return x
+        return self.att(x)
 
 
 class _LinearAttention(nn.Module):
     def __init__(self, dim: int, heads: int = 4, dim_head: int = 32, num_mem_kv: int = 4):
         super().__init__()
-        self.scale = dim_head ** -0.5
+
+        self.scale = dim_head**-0.5
         self.heads = heads
         hidden_dim = dim_head * heads
 
@@ -40,15 +39,15 @@ class _LinearAttention(nn.Module):
         self.to_qkv = nn.Linear(dim, hidden_dim * 3, bias=False)
         self.to_out = nn.Sequential(
             nn.Linear(hidden_dim, dim),
-            RMSNorm(dim)
+            RMSNorm(dim),
         )
 
     def forward(self, x: Tensor) -> Tensor:
         b, h, c = x.shape
         qkv = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = map(lambda t: rearrange(t, 'b x (h c) -> b h c x', h=self.heads), qkv)
+        q, k, v = map(lambda t: rearrange(t, "b x (h c) -> b h c x", h=self.heads), qkv)
 
-        mk, mv = map(lambda t: repeat(t, 'h c n -> b h c n', b=b), self.mem_kv)
+        mk, mv = map(lambda t: repeat(t, "h c n -> b h c n", b=b), self.mem_kv)
 
         k = torch.cat([mk, k], -1)
         v = torch.cat([mv, v], -1)
@@ -57,17 +56,29 @@ class _LinearAttention(nn.Module):
         k = k.softmax(dim=-1)
         q = q * self.scale
 
-        context = torch.einsum('b h d n, b h e n -> b h d e', k, v)
-        out = torch.einsum('b h d e, b h d n -> b h e n', context, q)
-        out = rearrange(out, 'b h c x -> b x (h c)', h=self.heads)
+        context = torch.einsum("b h d n, b h e n -> b h d e", k, v)
+        out = torch.einsum("b h d e, b h d n -> b h e n", context, q)
+        out = rearrange(out, "b h c x -> b x (h c)", h=self.heads)
         return self.to_out(out)
 
 
-AttentionConfig = namedtuple('AttentionConfig', ['enable_flash', 'enable_math', 'enable_mem_efficient'])
+AttentionConfig = namedtuple("AttentionConfig", ["enable_flash", "enable_math", "enable_mem_efficient"])
 
 
 class _Attention(nn.Module):
-    def __init__(self, dim: int, heads: int = 4, dim_head: int = 32, scale: int = 8, dropout: float = 0.0, rmsnorm: bool = True, mem_efficient: bool = True, num_mem_kv: int = 4):
+    """Multi-Head Self-Attention with PyTorch Scaled Dot-Product (SDP) Flash Attention support."""
+
+    def __init__(
+        self,
+        dim: int,
+        heads: int = 4,
+        dim_head: int = 32,
+        scale: int = 8,
+        dropout: float = 0.0,
+        rmsnorm: bool = True,
+        mem_efficient: bool = True,
+        num_mem_kv: int = 4,
+    ):
         super().__init__()
         self.scale = scale
         self.heads = heads
@@ -81,24 +92,25 @@ class _Attention(nn.Module):
         self.k_scale = nn.Parameter(torch.ones(dim_head))
         self.to_out = nn.Linear(hidden_dim, dim, bias=False)
 
-        device_properties = torch.cuda.get_device_properties(torch.device('cuda'))
-        # A100 (sm_80): prefer flash only; everything else: allow all kernels including math fallback
-        self.cuda_config = AttentionConfig(True, False, False) if device_properties.major == 8 and device_properties.minor == 0 else AttentionConfig(True, True, True)
+        device_properties = torch.cuda.get_device_properties(torch.device("cuda"))
+        self.cuda_config = (
+            AttentionConfig(True, False, False)
+            if device_properties.major == 8 and device_properties.minor == 0
+            else AttentionConfig(True, True, True)
+        )
         self.cpu_config = AttentionConfig(True, True, True)
 
     def flash_attn(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
         config = self.cuda_config if q.is_cuda else self.cpu_config
         q, k, v = map(lambda t: t.contiguous(), (q, k, v))
 
-        # SDP flash/mem-efficient kernels require half precision; cast if needed
         orig_dtype = q.dtype
         if orig_dtype == torch.float32:
             q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)
 
         with torch.backends.cuda.sdp_kernel(**config._asdict()):
             out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0.
+                q, k, v, dropout_p=self.dropout if self.training else 0.0
             )
 
         return out.to(orig_dtype)
@@ -107,22 +119,24 @@ class _Attention(nn.Module):
         b, h, c = x.shape
         x = self.norm(x)
         qkv = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
+        q, k, v = map(lambda t: rearrange(t, "b n (h d) -> b h n d", h=self.heads), qkv)
 
         q, k = map(l2norm, (q, k))
         q = q * self.q_scale
         k = k * self.k_scale
 
-        mk, mv = map(lambda t: repeat(t, 'h n d -> b h n d', b=b), self.mem_kv)
+        mk, mv = map(lambda t: repeat(t, "h n d -> b h n d", b=b), self.mem_kv)
         k = torch.cat([mk, k], -2)
         v = torch.cat([mv, v], -2)
 
         out = self.flash_attn(q, k, v)
-        out = rearrange(out, 'b h n d -> b n (h d)')
+        out = rearrange(out, "b h n d -> b n (h d)")
         return self.to_out(out)
 
 
 class SinusoidalPosEmb(nn.Module):
+    """Sinusoidal positional embedding generator for diffusion timesteps."""
+
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
@@ -133,25 +147,25 @@ class SinusoidalPosEmb(nn.Module):
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = x[:, None] * emb[None, :]
-        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        return emb
+        return torch.cat((emb.sin(), emb.cos()), dim=-1)
 
 
 class TimeEmbeddingNet(nn.Module):
+    """MLP producing FiLM scale and shift parameters from timestep embeddings."""
+
     def __init__(self, in_dim: int, out_dim: int):
         super().__init__()
-        self.mlp = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(in_dim, out_dim)
-        )
+        self.mlp = nn.Sequential(nn.SiLU(), nn.Linear(in_dim, out_dim))
 
-    def forward(self, time_emb: Tensor) -> tuple:
+    def forward(self, time_emb: Tensor) -> Tuple[Tensor, Tensor]:
         tb2 = self.mlp(time_emb)
-        tb2 = rearrange(tb2, 'b 1 c -> b 1 c')
+        tb2 = rearrange(tb2, "b 1 c -> b 1 c")
         return tb2.chunk(2, dim=2)
 
 
 class LearnedSinusoidalPosEmb(nn.Module):
+    """Learned Fourier positional embedding generator for diffusion timesteps."""
+
     def __init__(self, dim: int):
         super().__init__()
         assert (dim % 2) == 0
@@ -159,8 +173,8 @@ class LearnedSinusoidalPosEmb(nn.Module):
         self.weights = nn.Parameter(torch.randn(half_dim))
 
     def forward(self, x: Tensor) -> Tensor:
-        x = rearrange(x, 'b -> b 1')
-        freqs = x * rearrange(self.weights, 'd -> 1 d') * 2 * torch.pi
+        x = rearrange(x, "b -> b 1")
+        freqs = x * rearrange(self.weights, "d -> 1 d") * 2 * torch.pi
         fouriered = torch.cat((freqs.sin(), freqs.cos()), dim=-1)
-        fouriered = torch.cat((x, fouriered), dim=-1)
-        return fouriered
+        return torch.cat((x, fouriered), dim=-1)
+

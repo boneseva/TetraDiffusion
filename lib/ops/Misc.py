@@ -1,23 +1,24 @@
+from typing import Any, Callable, Generator, List, Optional, Union
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn.functional as F
+from torch import Tensor, nn
 
 
-# Helper functions
-def default(val, d):
+def default(val: Any, d: Union[Any, Callable[[], Any]]) -> Any:
     return val if exists(val) else (d() if callable(d) else d)
 
 
-def is_lambda(f):
+def is_lambda(f: Any) -> bool:
     return callable(f) and f.__name__ == "<lambda>"
 
-def cycle(dl):
+
+def cycle(dl: Any) -> Generator[Any, None, None]:
     while True:
         for data in dl:
             yield data
 
 
-def num_to_groups(num: int, divisor: int) -> list:
+def num_to_groups(num: int, divisor: int) -> List[int]:
     groups = num // divisor
     remainder = num % divisor
     arr = [divisor] * groups
@@ -26,26 +27,25 @@ def num_to_groups(num: int, divisor: int) -> list:
     return arr
 
 
-def exists(x):
+def exists(x: Any) -> bool:
     return x is not None
 
 
-def append_dims(t: torch.Tensor, dims: int) -> torch.Tensor:
+def append_dims(t: Tensor, dims: int) -> Tensor:
     shape = t.shape
     return t.reshape(*shape, *((1,) * dims))
 
 
-def l2norm(t: torch.Tensor) -> torch.Tensor:
+def l2norm(t: Tensor) -> Tensor:
     return F.normalize(t, dim=-1)
 
 
-# Custom modules
 class Residual(nn.Module):
     def __init__(self, fn: nn.Module):
         super().__init__()
         self.fn = fn
 
-    def forward(self, x, *args, **kwargs) -> torch.Tensor:
+    def forward(self, x: Tensor, *args: Any, **kwargs: Any) -> Tensor:
         return self.fn(x, *args, **kwargs) + x
 
 
@@ -55,7 +55,7 @@ class PreNorm(nn.Module):
         self.fn = fn
         self.norm = RMSNorm(dim)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         x = self.norm(x)
         return self.fn(x)
 
@@ -67,6 +67,7 @@ class RMSNorm(nn.Module):
         self.scale = scale
         self.normalize_dim = normalize_dim
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         scale = append_dims(self.g, x.ndim - self.normalize_dim - 1) if self.scale else 1
         return F.normalize(x, dim=self.normalize_dim) * scale * (x.shape[self.normalize_dim] ** 0.5)
+

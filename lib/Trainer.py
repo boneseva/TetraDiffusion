@@ -1,53 +1,58 @@
-from pathlib import Path
-import os
-import time
-from torch.utils.data import DataLoader
-from torch.optim import Adam,AdamW
-from tqdm.auto import tqdm
-from ema_pytorch import EMA
-from accelerate.local_sgd import LocalSGD
-from accelerate import Accelerator
-import numpy as np
+import datetime
 from glob import glob
+import json
+import os
+from pathlib import Path
+import random
+import time
+
+from accelerate import Accelerator
+from accelerate.local_sgd import LocalSGD
+from ema_pytorch import EMA
+import numpy as np
 from omegaconf import OmegaConf
-from lib.ops.Misc import *
-from lib.ops.Utils import plot_and_save_meshes, log_training_samples_to_wandb, meshes_to_wandb_point_clouds
+import torch
+from torch.optim import Adam, AdamW
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
+import wandb
+
 from lib.DDPM import GaussianDiffusion
+from lib.ops.Misc import cycle, exists, num_to_groups
+from lib.ops.Utils import log_training_samples_to_wandb, meshes_to_wandb_point_clouds, plot_and_save_meshes
 from lib.Tetradata import MeshLoader
 from lib.UVIT import UVIT
-import wandb
 
 
 class Trainer(object):
     def __init__(
-            self,
-            *,
-            train_batch_size=16,
-            gradient_accumulate_every=1,
-            train_lr=1e-4,
-            train_num_steps=100000,
-            ema_update_every=5,
-            ema_decay=0.995,
-            adam_betas=(0.9, 0.99),
-            save_and_sample_every=1000,
-            num_samples=25,
-            config_folder = "./config/",
-            results_folder='./results',
-            split_batches=True,
-            cfg=None,
-            inference=False
+        self,
+        *,
+        train_batch_size=16,
+        gradient_accumulate_every=1,
+        train_lr=1e-4,
+        train_num_steps=100000,
+        ema_update_every=5,
+        ema_decay=0.995,
+        adam_betas=(0.9, 0.99),
+        save_and_sample_every=1000,
+        num_samples=25,
+        config_folder="./config/",
+        results_folder="./results",
+        split_batches=True,
+        cfg=None,
+        inference=False,
     ):
         super().__init__()
-        import wandb
-        import random
 
         self.cfg = cfg
         self.config_folder = config_folder
         self.inference = inference
         self.accelerator = Accelerator(
             split_batches=split_batches,
-            mixed_precision='fp16' if self.cfg.training.mixed_precision else 'no',
+            mixed_precision="fp16" if self.cfg.training.mixed_precision else "no",
         )
+
 
         # ------------------------------------------------------------------
         # wandb init — only resume the same run when explicitly resuming
@@ -94,11 +99,22 @@ class Trainer(object):
             self.ds = torch.load(os.path.join(config_folder, "ds.pth"), weights_only=False)
             self.ds.config = self.cfg
         else:
-            # ── Dataset cache: keyed by category + grid_res so it is reused
-            #    across runs of the same category without rerunning GridPruning.
+            # ── Dataset cache: keyed by category + grid_res + split + csv_content_hash + fraction + seed
+            #    so different data fractions, splits, or modified CSV files never overwrite each other.
+            import hashlib
             category_key = "_".join(sorted(cfg.dataset.shapenet_ids))
+            csv_path_str = str(getattr(cfg, "splits_csv", None) or "lib/all.csv")
+            if os.path.exists(csv_path_str):
+                with open(csv_path_str, "rb") as f:
+                    csv_hash = hashlib.md5(f.read()).hexdigest()[:6]
+            else:
+                csv_hash = hashlib.md5(csv_path_str.encode("utf-8")).hexdigest()[:6]
+
+            split_tag = "split" if getattr(cfg.dataset, "train_split", True) else "nosplit"
+            frac_tag = f"_f{getattr(cfg.dataset, 'dataset_fraction', 1.0)}"
+            seed_tag = f"_seed{getattr(cfg, 'seed', 42)}"
             ds_cache_dir = os.path.join(cfg.data_path, "ds_cache")
-            ds_cache_path = os.path.join(ds_cache_dir, f"{category_key}_res{cfg.dataset.grid_res}.pth")
+            ds_cache_path = os.path.join(ds_cache_dir, f"{category_key}_res{cfg.dataset.grid_res}_{split_tag}_{csv_hash}{frac_tag}{seed_tag}_v2.pth")
 
             if os.path.exists(ds_cache_path):
                 print(f"[Trainer] Loading cached MeshLoader from {ds_cache_path}")
@@ -109,7 +125,6 @@ class Trainer(object):
                 except Exception as e:
                     print(f"[Trainer] WARNING: Failed to load MeshLoader cache "
                           f"({type(e).__name__}: {e}). "
-                          f"This is usually a pandas/numpy version mismatch. "
                           f"Deleting stale cache and rebuilding…")
                     try:
                         os.remove(ds_cache_path)
@@ -131,6 +146,38 @@ class Trainer(object):
 
             # Also save to run folder (required for inference)
             torch.save(self.ds, config_folder + "/ds.pth")
+
+            # Write JSON audit manifest recording dataset fraction, seed, and raw sample IDs in prefix selection order
+            if self.accelerator.is_main_process:
+                raw_paths = []
+                for p in self.ds.paths_train:
+                    try:
+                        cached_data = torch.load(p, map_location="cpu", weights_only=False)
+                        if isinstance(cached_data, (tuple, list)) and len(cached_data) > 3:
+                            raw_paths.append(str(cached_data[3]))
+                        else:
+                            raw_paths.append(str(p))
+                    except Exception:
+                        raw_paths.append(str(p))
+
+                hash_str = hashlib.sha256("\n".join(raw_paths).encode("utf-8")).hexdigest()
+                full_count = len(getattr(self.ds, "paths_train_full", self.ds.paths_train))
+
+                audit_manifest = {
+                    "requested_fraction": float(getattr(cfg.dataset, "dataset_fraction", 1.0)),
+                    "effective_fraction": float(len(self.ds.paths_train) / max(1, full_count)),
+                    "seed": int(getattr(cfg, "seed", 42)),
+                    "selected_count": len(self.ds.paths_train),
+                    "full_train_count": full_count,
+                    "test_count": len(self.ds.paths_test),
+                    "raw_paths_hash": hash_str,
+                    "raw_paths": raw_paths,
+                }
+
+                audit_path = os.path.join(config_folder, f"sample_ids_f{getattr(cfg.dataset, 'dataset_fraction', 1.0)}.json")
+                with open(audit_path, "w") as f:
+                    json.dump(audit_manifest, f, indent=2)
+                print(f"[Trainer] Audit manifest saved to {audit_path} (hash: {hash_str[:10]})")
 
             # Log a few real training samples as point clouds so you can
             # verify the data pipeline looks correct before training starts.

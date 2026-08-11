@@ -8,13 +8,14 @@ import pathlib
 import random
 import re
 import warnings
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from omegaconf import OmegaConf
 import torch
 from tqdm import tqdm
 
+from lib.image_preprocessing import normalize_image, prepare_slice
 from lib.Trainer import Trainer
 from lib.ops.Utils import plot_and_save_meshes
 
@@ -114,7 +115,38 @@ def parse_args() -> argparse.Namespace:
         "--image_path",
         type=str,
         default=None,
-        help="Path to 2D conditioning image (.png, .tif, .npy, .npz).",
+        help="Path to a single 2D conditioning image (.npy, .png, .tif, .npz).",
+    )
+    parser.add_argument(
+        "--image_dir",
+        type=str,
+        default=None,
+        help=(
+            "Directory of 2D conditioning images. Generates --num_images meshes "
+            "per image. Filenames are used as output stems."
+        ),
+    )
+    parser.add_argument(
+        "--image_preprocessed",
+        action="store_true",
+        help=(
+            "Input images are already anisotropy-corrected, letterboxed, normalised, "
+            "and resized to proj_size x proj_size (e.g. image_xy_p*.npy from the "
+            "extraction pipeline). No geometric or intensity preprocessing is applied."
+        ),
+    )
+    parser.add_argument(
+        "--voxel_spacing_xy",
+        type=float,
+        nargs=2,
+        metavar=("SX", "SY"),
+        default=None,
+        help=(
+            "Physical voxel spacing along axis-0 (sx) and axis-1 (sy) of the input "
+            "image (same units; only ratio matters). Required in raw-input mode "
+            "(when --image_preprocessed is NOT set). Ignored when --image_preprocessed "
+            "is set."
+        ),
     )
     parser.add_argument(
         "--cfg_scale",
@@ -139,39 +171,80 @@ def _resolve_inference_mode(parser: argparse.ArgumentParser, args: argparse.Name
     return "comparison", True
 
 
-def _load_conditioning_image(image_path: str | None, device: torch.device) -> torch.Tensor | None:
+def _load_conditioning_image(
+    image_path: str | None,
+    device: torch.device,
+    proj_size: int = 64,
+    preprocessed: bool = False,
+    voxel_spacing_xy: Optional[Tuple[float, float]] = None,
+) -> torch.Tensor | None:
     """
-    Load a 2D conditioning image from disk and return a (1, 1, H, W) float32 tensor
-    normalised to [0, 1] on the target device.
+    Load a 2D conditioning image and return a (1, 1, proj_size, proj_size) float32
+    tensor on *device*.
+
+    Two mutually exclusive input modes:
+
+    Raw mode (default, ``preprocessed=False``)
+        The caller provides a tight 2D EM crop at any resolution.
+        ``prepare_slice()`` and ``normalize_image()`` are applied exactly once.
+        ``voxel_spacing_xy`` (sx, sy) is required for anisotropy correction.
+
+    Preprocessed mode (``preprocessed=True``)
+        The caller provides an image that is already proj_size x proj_size,
+        float32, normalised to [0,1] — e.g. image_xy_p*.npy produced by
+        scripts/extract_instances_from_nifti.py.  No geometric or intensity
+        processing is applied; the array is validated and forwarded directly.
     """
     if image_path is None:
         return None
 
     path = pathlib.Path(image_path)
-    ext = path.suffix.lower()
+    ext  = path.suffix.lower()
 
-    if ext in (".npy",):
+    # ── Load to 2-D float32 numpy array ───────────────────────────────
+    if ext == ".npy":
         arr = np.load(str(path)).astype(np.float32)
-    elif ext in (".npz",):
+    elif ext == ".npz":
         data = np.load(str(path))
-        arr = data[list(data.keys())[0]].astype(np.float32)
+        arr  = data[list(data.keys())[0]].astype(np.float32)
     else:
         from PIL import Image as PILImage
-
         pil = PILImage.open(str(path))
         arr = np.array(pil).astype(np.float32)
+        if arr.ndim == 3:          # RGB/RGBA → grayscale
+            arr = arr.mean(axis=2)
 
-    # Normalise pixel intensity to [0, 1]
-    arr = arr - arr.min()
-    if arr.max() > 0:
-        arr = arr / arr.max()
+    if arr.ndim != 2:
+        raise ValueError(
+            f"Expected a 2-D image, got shape {arr.shape} in {path}"
+        )
+    if not np.isfinite(arr).all():
+        raise ValueError(f"Non-finite values in conditioning image {path}")
 
-    # Convert RGB (H, W, C) to grayscale (H, W) if needed
-    if arr.ndim == 3:
-        arr = arr.mean(axis=2)
+    # ── Mode-dependent processing ─────────────────────────────────────
+    if preprocessed:
+        # Validate only: caller guarantees proj_size x proj_size, [0,1]
+        if arr.shape != (proj_size, proj_size):
+            raise ValueError(
+                f"--image_preprocessed expects ({proj_size}, {proj_size}), "
+                f"got {arr.shape}. Remove --image_preprocessed to let inference "
+                f"resize and normalise automatically."
+            )
+    else:
+        # Raw mode: apply the same pipeline as the extraction script
+        if voxel_spacing_xy is None:
+            raise ValueError(
+                "--voxel_spacing_xy SX SY is required in raw-input mode. "
+                "Pass the physical voxel spacing from the source volume's NIfTI "
+                "header, or use --image_preprocessed if the image is already "
+                f"resized to {proj_size}x{proj_size} and normalised."
+            )
+        sx, sy = float(voxel_spacing_xy[0]), float(voxel_spacing_xy[1])
+        arr = prepare_slice(arr, sx=sx, sy=sy, proj_size=proj_size)
+        arr = normalize_image(arr)
 
     tensor = torch.from_numpy(arr).unsqueeze(0).unsqueeze(0).float()
-    return tensor.to(device)
+    return tensor.to(device)  # (1, 1, proj_size, proj_size)
 
 
 def _sanitize_name_component(value: Any, fallback: str = "sample") -> str:
@@ -389,34 +462,71 @@ def main():
     print(f"[inference] Sampling steps: {effective_sampling_steps}")
     print(f"[inference] Mode: {inference_mode} (Deterministic={deterministic_sampling})")
 
-    # Load 2D conditioning image if provided
-    cond_image = _load_conditioning_image(args.image_path, device=trainer.accelerator.device)
-    if cond_image is not None:
-        guidance = getattr(getattr(cfg, "image_cond", None), "cfg_guidance_scale", 1.0)
-        print(f"[inference] Loaded conditioning image: {args.image_path} (CFG scale={guidance})")
-    elif getattr(getattr(cfg, "image_cond", None), "enabled", False):
-        print("[inference] image_cond enabled but no image provided -> using unconditional null embedding.")
-
-    # Write manifest and run generation
-    manifest = _build_inference_manifest(
-        cfg,
-        args,
-        output_dir,
-        original_sampling_steps,
-        effective_sampling_steps,
-        inference_mode,
-        deterministic_sampling,
+    # ── Determine proj_size from config ───────────────────────────────
+    proj_size = int(
+        getattr(getattr(cfg, "image_cond", None), "proj_size", 64)
     )
-    _write_inference_manifest(output_dir, manifest)
 
-    generate_meshes(
-        trainer,
-        num_images=args.num_images,
-        device_type=device_type,
-        cond_image=cond_image,
-        output_dir=output_dir,
-        deterministic_sampling=deterministic_sampling,
-    )
+    def _load_image(p: str) -> torch.Tensor | None:
+        return _load_conditioning_image(
+            p,
+            device=trainer.accelerator.device,
+            proj_size=proj_size,
+            preprocessed=args.image_preprocessed,
+            voxel_spacing_xy=args.voxel_spacing_xy,
+        )
+
+    # ── Single image or directory mode ────────────────────────────────
+    if args.image_dir:
+        image_files = sorted(
+            pathlib.Path(args.image_dir).glob("image_xy_p*.npy")
+        )
+        if not image_files:
+            # Fallback: any .npy / .png in the directory
+            image_files = (
+                sorted(pathlib.Path(args.image_dir).glob("*.npy")) +
+                sorted(pathlib.Path(args.image_dir).glob("*.png"))
+            )
+        if not image_files:
+            print(
+                f"[inference] ERROR: No image files found in {args.image_dir}",
+                flush=True,
+            )
+            return
+
+        print(
+            f"[inference] --image_dir mode: {len(image_files)} image(s), "
+            f"{args.num_images} mesh(es) each."
+        )
+        for img_file in image_files:
+            cond_image = _load_image(str(img_file))
+            img_output_dir = os.path.join(output_dir, img_file.stem)
+            os.makedirs(img_output_dir, exist_ok=True)
+            generate_meshes(
+                trainer,
+                num_images=args.num_images,
+                device_type=device_type,
+                cond_image=cond_image,
+                output_dir=img_output_dir,
+                deterministic_sampling=deterministic_sampling,
+            )
+    else:
+        # Single image or unconditional
+        cond_image = _load_image(args.image_path)
+        if cond_image is not None:
+            guidance = getattr(getattr(cfg, "image_cond", None), "cfg_guidance_scale", 1.0)
+            print(f"[inference] Loaded conditioning image: {args.image_path} (CFG scale={guidance})")
+        elif getattr(getattr(cfg, "image_cond", None), "enabled", False):
+            print("[inference] image_cond enabled but no image provided -> unconditional null embedding.")
+
+        generate_meshes(
+            trainer,
+            num_images=args.num_images,
+            device_type=device_type,
+            cond_image=cond_image,
+            output_dir=output_dir,
+            deterministic_sampling=deterministic_sampling,
+        )
 
 
 if __name__ == "__main__":

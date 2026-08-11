@@ -81,4 +81,13 @@ image_cond:
   cfg_dropout_prob: 0.1   # fraction of training steps where image is dropped → null embedding (CFG)
   cfg_guidance_scale: 1.0 # inference guidance scale: 1.0 = no CFG, 3–7 = moderate, 10 = strong
 
+  # If True, MeshLoader._load_real_image() falls back to a synthetic SDF projection
+  # when image_xy_p*.npy files are missing from mesh_data/.  Safe for debugging the
+  # training loop before link_images_to_samples.py has been run.  Set to False (default)
+  # for production runs to catch missing images immediately at DataLoader startup.
+  allow_synthetic_fallback: False
 
+  # Optional: physical voxel spacing (sx, sy) assumed for isotropic data at inference
+  # when --voxel_spacing_xy is omitted.  Leave commented out to require the flag
+  # explicitly (recommended for anisotropic EM data).
+  # default_spacing_xy: [1.0, 1.0]

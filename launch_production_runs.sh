@@ -17,9 +17,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMIT="${SCRIPT_DIR}/submit_train.sh"
 
 # SLURM resource options
-GRES_REQ="gpu:1"
+GRES_REQ="gpu:b200:1"
 EXCLUDE="aga,apl,ixh,axa,ana"
 TIME_LIMIT="24:00:00"
+NUM_STEPS="10000"
 
 DRY_RUN=false
 RESUME=false
@@ -31,6 +32,8 @@ while [[ $# -gt 0 ]]; do
         --resume)       RESUME=true; shift ;;
         --category)     TARGET_CATEGORY="$2"; shift 2 ;;
         --time)         TIME_LIMIT="$2"; shift 2 ;;
+        --gpu)          GRES_REQ="gpu:$2:1"; shift 2 ;;
+        --num_steps)    NUM_STEPS="$2"; shift 2 ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
 done
@@ -54,7 +57,7 @@ submit_run() {
         "$SUBMIT"
         --category          "$cat"
         --name              "$name"
-        --num_steps         200000
+        --num_steps         "$NUM_STEPS"
         --batch_size        16
         --test_every        2000
         --offset_noise      0.1

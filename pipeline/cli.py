@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""
-pipeline/cli.py — Unified CLI Orchestrator for TetraDiffusion
-
-Consolidates the full pipeline:
-  1. Data Ingestion & Reorganization
-  2. DMTet Grid Preprocessing
-  3. CSV Registration
-  4. Production Training Launcher / Resumer
-  5. Inference & Mesh Generation
-  6. Quantitative Evaluation & Shape Space Visualization
-  7. Visual Dashboard Launcher
-
-Usage:
-    python pipeline/cli.py status
-    python pipeline/cli.py ingest --input_dir /path/to/raw --output_dir data_urocell/organelles_raw
-    python pipeline/cli.py preprocess --dataset urocell --category fv
-    python pipeline/cli.py register --dataset urocell --category fv
-    python pipeline/cli.py train --dataset urocell --category fv
-    python pipeline/cli.py infer --run_name urocell_fv_final_prod
-    python pipeline/cli.py evaluate --dataset urocell
-    python pipeline/cli.py dashboard --port 7860
-"""
 
 from __future__ import annotations
 
@@ -32,6 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+
 
 
 # ── Paths ──────────────────────────────────────────────────────────────────────

@@ -1,32 +1,3 @@
-"""
-TetraDiffusion — Gradio Diagnostic Dashboard
-=============================================
-No-code inference interface for structural biologists and paper reviewers.
-
-Architecture
-------------
-The app gracefully degrades in three tiers:
-  1. **Full model mode** — a valid ``--config_path`` is provided; the real
-     ``Trainer`` + ``GaussianDiffusion`` pipeline runs end-to-end.
-  2. **Demo mode** — no config supplied; a synthetic SDF blob is generated
-     using signed-distance math so reviewers can click "Generate" immediately
-     without uploading any files.
-  3. **Exemplar overlay** — whenever a ``.pt`` or ``.obj`` exemplar is
-     uploaded the ``ExemplarLossProfile`` is instantiated and injected into
-     the global ``organelle_loss_registry`` under the key ``"exemplar-driven"``.
-
-Usage (from repo root)
------------------------
-    # Demo mode (no model required):
-    python visualization/app.py
-
-    # Full model mode:
-    python visualization/app.py --config_path results/<run_name>
-
-    # With a specific CUDA device:
-    python visualization/app.py --config_path results/<run_name> --cuda_device 1
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -41,6 +12,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 import torch
+
 
 # ---------------------------------------------------------------------------
 # Repo root path injection — allows running from any CWD

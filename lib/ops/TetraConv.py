@@ -1,12 +1,22 @@
 import math
+from typing import Optional, Tuple
 import torch
-from torch import nn, Tensor
-from torch.nn import functional as F
+from torch import Tensor, nn
+import torch.nn.functional as F
+
 from lib.ops.Attention import TimeEmbeddingNet
 from lib.ops.Misc import RMSNorm
 
+
 class UnaryBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, use_groupnorm: bool, num_groups: int = 32, norm_cfg: str = "Silu"):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        use_groupnorm: bool,
+        num_groups: int = 32,
+        norm_cfg: str = "Silu",
+    ):
         super().__init__()
         self.mlp = nn.Linear(in_channels, out_channels, bias=True)
         self.use_groupnorm = use_groupnorm
@@ -15,12 +25,13 @@ class UnaryBlock(nn.Module):
             self.act = nn.Identity()
         else:
             if self.use_groupnorm:
-                self.norm = nn.GroupNorm(num_groups,out_channels)
+                self.norm = nn.GroupNorm(num_groups, out_channels)
             else:
                 self.norm = RMSNorm(out_channels)
             self.act = nn.SiLU()
 
-    def forward(self, feats: Tensor, scale_shift: tuple = None) -> Tensor:
+
+    def forward(self, feats: Tensor, scale_shift: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
         feats = self.mlp(feats)
         if self.use_groupnorm:
             feats = self.norm(feats.transpose(-1, -2)).transpose(-1, -2)
@@ -33,9 +44,29 @@ class UnaryBlock(nn.Module):
 
 
 class TetraConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,  use_groupnorm: bool, num_groups: int = 32,act_cfg: str = "SiLU", neighbor_indices=None, vertices=None, down_up_: bool = False):
+    """Tetrahedral convolution block with normalization, scale-and-shift FiLM modulation, and activation."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        use_groupnorm: bool,
+        num_groups: int = 32,
+        act_cfg: str = "SiLU",
+        neighbor_indices: Optional[Tensor] = None,
+        vertices: Optional[Tensor] = None,
+        down_up_: bool = False,
+    ):
         super().__init__()
-        self.conv = TetraConv(in_channels, out_channels, kernel_size, neighbor_indices, vertices=vertices, down_up=down_up_)
+        self.conv = TetraConv(
+            in_channels,
+            out_channels,
+            kernel_size,
+            neighbor_indices,
+            vertices=vertices,
+            down_up=down_up_,
+        )
         self.use_groupnorm = use_groupnorm
         if act_cfg != "None":
             if self.use_groupnorm:
@@ -47,7 +78,7 @@ class TetraConvBlock(nn.Module):
             self.norm = nn.Identity()
             self.act = nn.Identity()
 
-    def forward(self, vert_features: Tensor, scale_shift: tuple = None) -> Tensor:
+    def forward(self, vert_features: Tensor, scale_shift: Optional[Tuple[Tensor, Tensor]] = None) -> Tensor:
         vert_feats = self.conv(vert_features)
         if self.use_groupnorm:
             vert_feats = self.norm(vert_feats.transpose(-1, -2)).transpose(-1, -2)
@@ -60,26 +91,96 @@ class TetraConvBlock(nn.Module):
 
 
 class TetraResidualBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, use_groupnorm: bool, num_groups: int,
-                 act_cfg: str = "SiLU", time_emb_dim: int = None, neighbor_indices=None, vertices=None):
-        super().__init__()
-        self.conv = torch.compile(_TetraResidualBlock(in_channels, out_channels, kernel_size, use_groupnorm, num_groups, act_cfg, time_emb_dim, neighbor_indices, vertices))
+    """Tetrahedral Residual Block combining two TetraConvBlocks with a shortcut connection."""
 
-    def forward(self, x: Tensor, t: Tensor = None) -> Tensor:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        use_groupnorm: bool,
+        num_groups: int,
+        act_cfg: str = "SiLU",
+        time_emb_dim: Optional[int] = None,
+        neighbor_indices: Optional[Tensor] = None,
+        vertices: Optional[Tensor] = None,
+    ):
+        super().__init__()
+        self.conv = torch.compile(
+            _TetraResidualBlock(
+                in_channels,
+                out_channels,
+                kernel_size,
+                use_groupnorm,
+                num_groups,
+                act_cfg,
+                time_emb_dim,
+                neighbor_indices,
+                vertices,
+            )
+        )
+
+    def forward(self, x: Tensor, t: Optional[Tensor] = None) -> Tensor:
         return self.conv(x, t)
 
 
 class _TetraResidualBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, use_groupnorm: bool, num_groups: int,
-                 act_cfg: str = "SiLU", time_emb_dim: int = None, neighbor_indices=None, vertices=None):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        use_groupnorm: bool,
+        num_groups: int,
+        act_cfg: str = "SiLU",
+        time_emb_dim: Optional[int] = None,
+        neighbor_indices: Optional[Tensor] = None,
+        vertices: Optional[Tensor] = None,
+    ):
         super().__init__()
-        self.conv = TetraConvBlock(in_channels, out_channels, kernel_size, use_groupnorm, num_groups, act_cfg, neighbor_indices, vertices)
-        self.conv2 = TetraConvBlock(out_channels, out_channels, kernel_size, use_groupnorm, num_groups, act_cfg, neighbor_indices, vertices)
-        self.unary_shortcut = UnaryBlock(in_channels, out_channels, use_groupnorm, num_groups=0, norm_cfg="None") if in_channels != out_channels else nn.Identity()
-        self.mlp1 = TimeEmbeddingNet(time_emb_dim, out_channels * 2) if time_emb_dim is not None else None
+        self.conv = TetraConvBlock(
+            in_channels,
+            out_channels,
+            kernel_size,
+            use_groupnorm,
+            num_groups,
+            act_cfg,
+            neighbor_indices,
+            vertices,
+        )
+        self.conv2 = TetraConvBlock(
+            out_channels,
+            out_channels,
+            kernel_size,
+            use_groupnorm,
+            num_groups,
+            act_cfg,
+            neighbor_indices,
+            vertices,
+        )
+        self.unary_shortcut = (
+            UnaryBlock(
+                in_channels,
+                out_channels,
+                use_groupnorm,
+                num_groups=0,
+                norm_cfg="None",
+            )
+            if in_channels != out_channels
+            else nn.Identity()
+        )
+        self.mlp1 = (
+            TimeEmbeddingNet(time_emb_dim, out_channels * 2)
+            if time_emb_dim is not None
+            else None
+        )
 
-    def forward(self, verts_features: Tensor, time_emb: Tensor = None) -> Tensor:
-        scale_shift1 = self.mlp1(time_emb) if self.mlp1 is not None and time_emb is not None else None
+    def forward(self, verts_features: Tensor, time_emb: Optional[Tensor] = None) -> Tensor:
+        scale_shift1 = (
+            self.mlp1(time_emb)
+            if self.mlp1 is not None and time_emb is not None
+            else None
+        )
         residual = self.conv(verts_features, scale_shift1)
         residual = self.conv2(residual)
         shortcut = self.unary_shortcut(verts_features)
@@ -87,29 +188,95 @@ class _TetraResidualBlock(nn.Module):
 
 
 class SingleTetraConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,  use_groupnorm: bool,num_groups: int,
-                 act_cfg: str = "SiLU", time_emb_dim: int = None, neighbor_indices=None, vertices=None, down_up_: bool = False):
-        super().__init__()
-        self.conv = torch.compile(_SingleTetraConvBlock(in_channels, out_channels, kernel_size,use_groupnorm, num_groups, act_cfg, time_emb_dim, neighbor_indices, vertices, down_up_))
+    """Single Tetrahedral Convolution block used for downsampling or upsampling steps."""
 
-    def forward(self, x: Tensor, t: Tensor = None) -> Tensor:
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        use_groupnorm: bool,
+        num_groups: int,
+        act_cfg: str = "SiLU",
+        time_emb_dim: Optional[int] = None,
+        neighbor_indices: Optional[Tensor] = None,
+        vertices: Optional[Tensor] = None,
+        down_up_: bool = False,
+    ):
+        super().__init__()
+        self.conv = torch.compile(
+            _SingleTetraConvBlock(
+                in_channels,
+                out_channels,
+                kernel_size,
+                use_groupnorm,
+                num_groups,
+                act_cfg,
+                time_emb_dim,
+                neighbor_indices,
+                vertices,
+                down_up_,
+            )
+        )
+
+    def forward(self, x: Tensor, t: Optional[Tensor] = None) -> Tensor:
         return self.conv(x, t)
 
 
 class _SingleTetraConvBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, use_groupnorm: bool, num_groups: int,
-                 act_cfg: str = "SiLU", time_emb_dim: int = None, neighbor_indices=None, vertices=None, down_up_: bool = False):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        use_groupnorm: bool,
+        num_groups: int,
+        act_cfg: str = "SiLU",
+        time_emb_dim: Optional[int] = None,
+        neighbor_indices: Optional[Tensor] = None,
+        vertices: Optional[Tensor] = None,
+        down_up_: bool = False,
+    ):
         super().__init__()
-        self.conv = TetraConvBlock(in_channels, out_channels, kernel_size, use_groupnorm, num_groups, act_cfg, neighbor_indices, vertices, down_up_)
-        self.mlp1 = TimeEmbeddingNet(time_emb_dim, out_channels * 2) if time_emb_dim is not None else None
+        self.conv = TetraConvBlock(
+            in_channels,
+            out_channels,
+            kernel_size,
+            use_groupnorm,
+            num_groups,
+            act_cfg,
+            neighbor_indices,
+            vertices,
+            down_up_,
+        )
+        self.mlp1 = (
+            TimeEmbeddingNet(time_emb_dim, out_channels * 2)
+            if time_emb_dim is not None
+            else None
+        )
 
-    def forward(self, verts_features: Tensor, time_emb: Tensor = None) -> Tensor:
-        scale_shift1 = self.mlp1(time_emb) if self.mlp1 is not None and time_emb is not None else None
+    def forward(self, verts_features: Tensor, time_emb: Optional[Tensor] = None) -> Tensor:
+        scale_shift1 = (
+            self.mlp1(time_emb)
+            if self.mlp1 is not None and time_emb is not None
+            else None
+        )
         return self.conv(verts_features, scale_shift1)
 
 
 class TetraConv(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, neighbor_indices: Tensor, use_bias: bool = True, vertices=None, down_up: bool = False):
+    """Core Tetrahedral Convolution module executing neighborhood graph gathering and linear projection."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        neighbor_indices: Tensor,
+        use_bias: bool = True,
+        vertices: Optional[Tensor] = None,
+        down_up: bool = False,
+    ):
         super().__init__()
         with torch.no_grad():
             neighbor_indices = neighbor_indices.clone()
@@ -122,7 +289,9 @@ class TetraConv(nn.Module):
 
         self.kernel_size = kernel_size
         self.in_channels = in_channels
-        self.weights = nn.Parameter(torch.ones(size=(out_channels, kernel_size * in_channels)))
+        self.weights = nn.Parameter(
+            torch.ones(size=(out_channels, kernel_size * in_channels))
+        )
         self.use_bias = use_bias
         if self.use_bias:
             self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -133,11 +302,11 @@ class TetraConv(nn.Module):
         if indices.dim() > 1:
             if dim < 0:
                 dim += inputs.dim()
-            output_shape = inputs.shape[:dim] + indices.shape + inputs.shape[dim + 1:]
+            output_shape = inputs.shape[:dim] + indices.shape + inputs.shape[dim + 1 :]
             outputs = outputs.view(*output_shape)
         return outputs
 
-    def reset_parameters(self):
+    def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.weights, a=math.sqrt(5))
         if self.use_bias:
             fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weights)
@@ -154,3 +323,4 @@ class TetraConv(nn.Module):
         if self.use_bias:
             res.add_(self.bias)
         return res
+
