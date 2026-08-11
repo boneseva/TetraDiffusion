@@ -11,7 +11,6 @@ normalize_image().  Do not copy these functions elsewhere.
 from __future__ import annotations
 
 import numpy as np
-import skimage.transform
 
 
 def prepare_slice(
@@ -47,6 +46,8 @@ def prepare_slice(
     ValueError
         If arr_2d is not 2-D.
     """
+    import skimage.transform
+
     if arr_2d.ndim != 2:
         raise ValueError(
             f"prepare_slice expects a 2-D array, got shape {arr_2d.shape}"

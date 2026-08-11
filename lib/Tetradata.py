@@ -16,7 +16,6 @@ import torch
 from torch.utils.data.dataset import Dataset
 from tqdm import tqdm
 
-from lib.image_preprocessing import normalize_image
 from lib.GridPruning import mask_cube
 
 
