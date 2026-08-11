@@ -17,7 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMIT="${SCRIPT_DIR}/submit_train.sh"
 
 # SLURM resource options
-GRES_REQ="gpu:b200:1"
+GRES_REQ="gpu:1"
 EXCLUDE="aga,apl,ixh,axa,ana"
 TIME_LIMIT="24:00:00"
 NUM_STEPS="10000"

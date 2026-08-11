@@ -20,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBMIT="${SCRIPT_DIR}/submit_train.sh"
 
 # Default resource options
-GPU_TYPE="b200"
-GRES_REQ="gpu:b200:1"
+GPU_TYPE="1"
+GRES_REQ="gpu:1"
 EXCLUDE="aga,apl,ixh,axa,ana"
 TIME_LIMIT="12:00:00"
 NUM_STEPS="15000"
@@ -61,9 +61,15 @@ submit_scaling_run() {
         extra_bio_args=(--no_bio_loss)
     fi
 
-    # Convert fraction e.g. 0.25 -> 25
+    # Convert fraction e.g. 0.25 -> 25 (pure bash)
     local frac_percent
-    frac_percent=$(python3 -c "print(int(float('$frac')*100))")
+    case "$frac" in
+        "1.00") frac_percent="100" ;;
+        "0.75") frac_percent="75" ;;
+        "0.50") frac_percent="50" ;;
+        "0.25") frac_percent="25" ;;
+        *)      frac_percent="${frac//./}" ;;
+    esac
     local name="mito_f${frac_percent}_${bio_flag}"
 
     local cmd=(
