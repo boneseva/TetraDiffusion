@@ -28,7 +28,8 @@ NUM_STEPS="15000"
 SEED="42"
 CATEGORY="Mitochondria"
 
-DRY_RUN=false
+SINGLE=false
+TARGET_FRACTION=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -37,6 +38,8 @@ while [[ $# -gt 0 ]]; do
         --num_steps)    NUM_STEPS="$2"; shift 2 ;;
         --seed)         SEED="$2"; shift 2 ;;
         --time)         TIME_LIMIT="$2"; shift 2 ;;
+        --single)       SINGLE=true; shift ;;
+        --fraction)     TARGET_FRACTION="$2"; shift 2 ;;
         *) echo "Unknown flag: $1" >&2; exit 1 ;;
     esac
 done
@@ -48,6 +51,7 @@ echo " GPU Target  : $GRES_REQ"
 echo " Steps/Run   : $NUM_STEPS"
 echo " Seed        : $SEED"
 echo " Exclude     : $EXCLUDE"
+echo " Single Run  : $SINGLE"
 echo " Mode        : $( [ "$DRY_RUN" = true ] && echo "DRY RUN (preview only)" || echo "SUBMIT TO SLURM" )"
 echo "============================================================"
 echo ""
@@ -104,11 +108,19 @@ submit_scaling_run() {
     fi
 }
 
-FRACTIONS=("1.00" "0.75" "0.50" "0.25")
+if [ "$SINGLE" = true ]; then
+    FRACTIONS=("1.00")
+elif [ -n "$TARGET_FRACTION" ]; then
+    FRACTIONS=("$TARGET_FRACTION")
+else
+    FRACTIONS=("1.00" "0.75" "0.50" "0.25")
+fi
 
 for frac in "${FRACTIONS[@]}"; do
     submit_scaling_run "$frac" "bio_on"
-    submit_scaling_run "$frac" "bio_off"
+    if [ "$SINGLE" = false ]; then
+        submit_scaling_run "$frac" "bio_off"
+    fi
 done
 
 echo ""
