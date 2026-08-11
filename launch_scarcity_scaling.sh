@@ -87,6 +87,7 @@ submit_scaling_run() {
         --name              "$name"
         --num_steps         "$NUM_STEPS"
         --batch_size        16
+        --test_every        500
         --dataset_fraction  "$frac"
         --seed              "$SEED"
         --train_split

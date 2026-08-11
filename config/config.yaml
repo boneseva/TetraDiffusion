@@ -4,20 +4,12 @@ use_local_sgd: False
 
 # Training params
 training:
-  # Effective batch = batch_size * ga.  Start here; if VRAM allows go to
-  # batch_size: 8 / ga: 1 and raise lr to 2e-4 (sqrt(4x) scaling rule).
-  batch_size: 4   # was 1 – raises GPU utilisation; lower back to 1 if OOM
-  ga: 1           # was 2 – less accumulation needed with larger batch
+  batch_size: 4
+  ga: 1
   ema_decay: 0.995
-  lr: 1.4e-4      # was 1e-4 – scaled by sqrt(2) for 2× effective batch
+  lr: 1.4e-4
   num_steps: 400000
-  test_every: 2000
-  # LR schedule — options:
-  #   warmup_constant  (default) linear warmup → constant  [DDPM / LDM style]
-  #   constant                   no warmup, flat LR        [original DDPM]
-  #   warmup_cosine              linear warmup → cosine decay to lr_min
-  #   cosine                     cosine decay from step 0  (no warmup)
-  # Override per-run with:  --lr_schedule <name>
+  test_every: 500
   lr_schedule: warmup_constant
   warmup_steps: 2000        # steps for linear ramp  (ignored for constant / cosine)
   lr_min: 1e-6              # floor LR for cosine schedules
@@ -64,30 +56,26 @@ diffusion:
 
   # Surface-weighted SDF background loss — fixes multi-component generation.
   # See docs/sdf_background_loss.md for full explanation and ablation guidance.
-  # Set sdf_bg_loss_weight > 0 to enable (suggested starting value: 0.05).
-  sdf_bg_loss_weight: 0.0       # weight λ_bg (0 = disabled)
-  sdf_bg_threshold: 0.3         # normalised SDF cutoff defining "background" (0.2–0.5)
+  sdf_bg_loss_weight: 0.0       # weight for SDF background loss (0 = disabled)
+  sdf_bg_threshold: 0.3         # normalised SDF threshold for background (0.2–0.5)
 
+# Dataset params
+dataset:
+  grid_res: 128
+  shapenet_ids: ["02691156"] # Airplane
+  data_path: "./data/preprocessed/"
+  num_samples: 10000
+  mask_data: False
+  grid_pruning: True
+  sdf_masking_value: 0.2
+  deform_masking_value: 0.0
+  mask_lossy: True
+  threshold: 10
+  color: False # 3D mesh without color attributes
 
-# 2-D image conditioning  (see IMAGE_CONDITIONING.md for full details)
-# Set enabled: True to train a model that can be conditioned on 2D images.
-# All unconditional code paths are completely unchanged when enabled: False.
+# 2D Image Conditioning params (disabled by default)
 image_cond:
-  enabled: False          # master switch — False = zero code-path change, fully backward compatible
-  proj_size: 64           # side length (pixels) of the projection image generated during training
-  in_channels: 1          # 1 = grayscale (projection / EM slice), 3 = RGB
-  encoder: cnn            # image encoder architecture: currently only 'cnn' (SmallCNNEncoder)
-  base_channels: 32       # CNN base width; doubles per block  (32 → 64 → 128)
-  cfg_dropout_prob: 0.1   # fraction of training steps where image is dropped → null embedding (CFG)
-  cfg_guidance_scale: 1.0 # inference guidance scale: 1.0 = no CFG, 3–7 = moderate, 10 = strong
-
-  # If True, MeshLoader._load_real_image() falls back to a synthetic SDF projection
-  # when image_xy_p*.npy files are missing from mesh_data/.  Safe for debugging the
-  # training loop before link_images_to_samples.py has been run.  Set to False (default)
-  # for production runs to catch missing images immediately at DataLoader startup.
-  allow_synthetic_fallback: False
-
-  # Optional: physical voxel spacing (sx, sy) assumed for isotropic data at inference
-  # when --voxel_spacing_xy is omitted.  Leave commented out to require the flag
-  # explicitly (recommended for anisotropic EM data).
-  # default_spacing_xy: [1.0, 1.0]
+  enabled: False
+  proj_size: 64
+  embed_dim: 1024
+  cfg_guidance_scale: 1.5
