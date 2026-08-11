@@ -457,7 +457,13 @@ class MeshLoader(Dataset):
                     if idx + 1 < len(name_parts):
                         model_id_idx = idx + 1
                     break
-            model_id = name_parts[model_id_idx] if model_id_idx is not None else name_parts[-3]
+            raw_model_id = name_parts[model_id_idx] if model_id_idx is not None else name_parts[-3]
+            prefixed_model_id = f"{shapenetid}_{raw_model_id}" if not raw_model_id.startswith(f"{shapenetid}_") else raw_model_id
+
+            if prefixed_model_id in self.splits["modelId"].values:
+                model_id = prefixed_model_id
+            else:
+                model_id = raw_model_id
             in_csv = model_id in self.splits["modelId"].values
 
             # Determine split; if in CSV use CSV split column, else fallback to deterministic 80/20 split

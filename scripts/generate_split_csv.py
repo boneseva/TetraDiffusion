@@ -130,7 +130,13 @@ def main() -> int:
     intended: Dict[str, Tuple[str, str]] = {}  # model_id → (split, organelle_id)
     for subvol_id, instance_id, organelle_id in instances:
         split = "val" if subvol_id in val_subvols else "train"
-        intended[instance_id] = (split, organelle_id)
+        # Ensure model_id is organelle-qualified (e.g. mito_fib1-0-0-0_inst_000001)
+        model_id = (
+            instance_id
+            if instance_id.startswith(f"{organelle_id}_")
+            else f"{organelle_id}_{instance_id}"
+        )
+        intended[model_id] = (split, organelle_id)
 
     # ── Read existing all.csv ──────────────────────────────────────────
     existing = _read_existing_all_csv(args.all_csv)
