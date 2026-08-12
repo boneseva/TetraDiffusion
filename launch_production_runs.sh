@@ -20,7 +20,7 @@ SUBMIT="${SCRIPT_DIR}/submit_train.sh"
 GRES_REQ="gpu:1"
 EXCLUDE="aga,apl,ixh,axa,ana"
 TIME_LIMIT="24:00:00"
-NUM_STEPS="10000"
+NUM_STEPS="100000"
 
 DRY_RUN=false
 RESUME=false
@@ -93,7 +93,7 @@ echo " TetraDiffusion — Production Training Launcher / Resumer"
 echo "============================================================"
 echo " Mode        : $( [ "$RESUME" = true ] && echo "RESUME (continuing from checkpoint)" || echo "NEW RUN" )"
 echo " Batch Size  : 16"
-echo " Steps/Run   : 400,000"
+echo " Steps/Run   : 100,000"
 echo " Exclude     : $EXCLUDE"
 echo "============================================================"
 echo ""

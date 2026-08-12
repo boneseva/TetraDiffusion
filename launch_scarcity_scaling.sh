@@ -9,8 +9,10 @@
 #
 # Usage:
 #   bash launch_scarcity_scaling.sh                     # Submit all 8 scaling runs on B200
+#   bash launch_scarcity_scaling.sh --resume            # Resume all scaling runs from latest checkpoint
 #   bash launch_scarcity_scaling.sh --gpu b300          # Target B300 GPUs
 #   bash launch_scarcity_scaling.sh --dry_run           # Preview sbatch commands without submitting
+#   bash launch_scarcity_scaling.sh --resume --fraction 0.25
 #
 # ==============================================================================
 
@@ -29,12 +31,14 @@ SEED="42"
 CATEGORY="Mitochondria"
 
 DRY_RUN=false
+RESUME=false
 SINGLE=false
 TARGET_FRACTION=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry_run)      DRY_RUN=true; shift ;;
+        --resume)       RESUME=true; shift ;;
         --gpu)          GPU_TYPE="$2"; GRES_REQ="gpu:${2}:1"; shift 2 ;;
         --num_steps)    NUM_STEPS="$2"; shift 2 ;;
         --seed)         SEED="$2"; shift 2 ;;
@@ -45,6 +49,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Build resume flag
+RESUME_FLAG=()
+[ "$RESUME" = true ] && RESUME_FLAG=(--resume)
+
 echo "============================================================"
 echo " Experiment 3 — Data Scarcity Scaling Launcher (Mitochondria)"
 echo "============================================================"
@@ -53,7 +61,7 @@ echo " Steps/Run   : $NUM_STEPS"
 echo " Seed        : $SEED"
 echo " Exclude     : $EXCLUDE"
 echo " Single Run  : $SINGLE"
-echo " Mode        : $( [ "$DRY_RUN" = true ] && echo "DRY RUN (preview only)" || echo "SUBMIT TO SLURM" )"
+echo " Mode        : $( [ "$RESUME" = true ] && echo "RESUME (continuing from checkpoint)" || ( [ "$DRY_RUN" = true ] && echo "DRY RUN (preview only)" || echo "SUBMIT TO SLURM" ) )"
 echo "============================================================"
 echo ""
 
@@ -92,6 +100,7 @@ submit_scaling_run() {
         --seed              "$SEED"
         --train_split
         "${extra_bio_args[@]}"
+        "${RESUME_FLAG[@]}"
     )
 
     if [ "$DRY_RUN" = true ]; then
