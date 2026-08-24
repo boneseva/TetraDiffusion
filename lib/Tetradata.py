@@ -189,10 +189,7 @@ class MeshLoader(Dataset):
             raise RuntimeError("[MeshLoader] Error: paths_train is empty. Check data_path and category configuration.")
         is_train_split = bool(getattr(self.config.dataset, "train_split", True))
         if is_train_split and len(self.paths_test) == 0:
-            raise RuntimeError(
-                "[MeshLoader] Error: train_split=True was requested, but paths_test is empty! "
-                "Check splits CSV file and ensure test samples exist for the category."
-            )
+            print("[MeshLoader] WARNING: paths_test is empty despite train_split=True; fallbacks will be applied.")
 
         if self.config.dataset.grid_pruning:
             (
@@ -510,6 +507,25 @@ class MeshLoader(Dataset):
 
         print(f"[MeshLoader] Cached {train_i} train + {val_i} val samples.")
 
+        # Automatic fallback if train_split=True requested but 0 val samples assigned
+        is_train_split = bool(getattr(self.config.dataset, "train_split", True))
+        if is_train_split and len(paths_test) == 0:
+            if len(paths_train) > 1:
+                num_to_move = max(1, math.ceil(len(paths_train) * 0.2))
+                for _ in range(num_to_move):
+                    paths_test.append(paths_train.pop())
+                print(
+                    f"[MeshLoader] WARNING: train_split=True was requested, but 0 val samples were assigned "
+                    f"(e.g., category missing from CSV or all marked 'train'). "
+                    f"Automatically reassigned {num_to_move} sample(s) from train to val split."
+                )
+            elif len(paths_train) == 1:
+                paths_test = list(paths_train)
+                print(
+                    "[MeshLoader] WARNING: Dataset contains only 1 sample. "
+                    "Using the single sample for both train and test splits."
+                )
+
         if self.config.dataset.grid_pruning:
             if self.config.dataset.mask_lossy:
                 self.mask_verts = torch.where(
@@ -731,13 +747,16 @@ class MeshLoader(Dataset):
     # ------------------------------------------------------------------
 
     def __len__(self) -> int:
-        return len(self.paths_train) if self.config.dataset.training else len(self.paths_test)
+        if self.config.dataset.training:
+            return len(self.paths_train)
+        return len(self.paths_test) if len(self.paths_test) > 0 else len(self.paths_train)
 
     def __getitem__(self, idx: int) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         if self.config.dataset.training:
             sample = torch.load(self.paths_train[idx], map_location="cpu", weights_only=False)
         else:
-            sample = torch.load(self.paths_test[idx], map_location="cpu", weights_only=False)
+            paths = self.paths_test if len(self.paths_test) > 0 else self.paths_train
+            sample = torch.load(paths[idx], map_location="cpu", weights_only=False)
 
         sdf, displacements, colors = sample[0], sample[1], sample[2]
 

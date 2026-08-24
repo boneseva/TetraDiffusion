@@ -58,6 +58,12 @@ def parse_args() -> argparse.Namespace:
         help="Register all subdirectories, even if sample.pth is missing",
     )
     parser.add_argument(
+        "--val_ratio",
+        type=float,
+        default=0.2,
+        help="Fraction of registered models assigned to val split (default: 0.2, set 0.0 for 100%% train)",
+    )
+    parser.add_argument(
         "--dry_run",
         action="store_true",
         help="Print what would be added without writing anything",
@@ -121,7 +127,7 @@ def main() -> int:
     print(f"Existing entries: {len(existing)}, max index: custom_{max_idx:07d}")
     print()
 
-    to_add: list[tuple[str, str]] = []  # (category, model_id)
+    to_add: list[tuple[str, str, str]] = []  # (category, model_id, split)
 
     for category in args.category:
         models = discover_models(data_root, category, args.require_sample_pth)
@@ -131,10 +137,23 @@ def main() -> int:
 
         new = [(category, m) for m in models if m not in existing]
         already = len(models) - len(new)
+
+        to_add_cat: list[tuple[str, str, str]] = []
+        if args.val_ratio > 0.0 and len(new) > 1:
+            n_val = max(1, int(len(new) * args.val_ratio))
+            sorted_new = sorted(new, key=lambda x: x[1])
+            val_models = set(m for _, m in sorted_new[:n_val])
+            for cat, m in new:
+                split = "val" if m in val_models else "train"
+                to_add_cat.append((cat, m, split))
+        else:
+            for cat, m in new:
+                to_add_cat.append((cat, m, "train"))
+
         print(f"[{category}] Found {len(models)} models, {already} already registered, {len(new)} to add:")
-        for _, m in new:
-            print(f"  + {m}")
-        to_add.extend(new)
+        for _, m, split in to_add_cat:
+            print(f"  + {m} ({split})")
+        to_add.extend(to_add_cat)
 
     print()
 
@@ -153,10 +172,10 @@ def main() -> int:
         writer = csv.writer(f)
         if write_header:
             writer.writerow(["id", "synsetId", "subSynsetId", "modelId", "split"])
-        for i, (category, model_id) in enumerate(to_add):
+        for i, (category, model_id, split) in enumerate(to_add):
             idx = f"custom_{max_idx + 1 + i:07d}"
-            writer.writerow([idx, category, category, model_id, "train"])
-            print(f"  Added: {idx},{category},{category},{model_id},train")
+            writer.writerow([idx, category, category, model_id, split])
+            print(f"  Added: {idx},{category},{category},{model_id},{split}")
 
     print()
     print(f"Done. Added {len(to_add)} row(s) to {all_csv}")

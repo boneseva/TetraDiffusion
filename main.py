@@ -142,8 +142,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--train_split",
         action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Enable train/test dataset split (default: True).",
+        default=None,
+        help="Enable train/test dataset split (if omitted, respects config/path.yaml default).",
     )
     return parser.parse_args()
 
