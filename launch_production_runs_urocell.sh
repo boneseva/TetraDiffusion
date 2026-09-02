@@ -56,7 +56,8 @@ submit_run() {
         --category          "$cat"
         --name              "$name"
         --num_steps         100000
-        --batch_size        16
+        --batch_size        8
+        --ga 2
         --test_every        2000
         --offset_noise      0.1
         --bio_loss_weight   "$bio_w"
